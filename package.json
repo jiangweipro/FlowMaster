@@ -116,8 +116,8 @@
     "test:watch": "vitest",
     "generate-icon": "node scripts/generate-icon.js",
     "prepackage": "npm run compile",
-    "package": "npx vsce package --no-dependencies",
-    "publish": "npx vsce publish --no-dependencies"
+    "package": "npx vsce package",
+    "publish": "npx vsce publish"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
