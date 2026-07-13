@@ -532,6 +532,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 
   var currentDemand = null;
   var selectedPhase = null;
+  var displayedDemandId = null;
   var currentDemandId = null;
   var xterm = null;
   var fitAddon = null;
@@ -712,10 +713,16 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     if(payload.error){ showError(payload.error); }
     if(payload.noDemands || !payload.demand){
       currentDemand = null;
+      displayedDemandId = null;
       mainContent.innerHTML = '';
       show(emptyDetail);
       emptyDetail.textContent = '暂无需求，请从左侧创建新需求';
       return;
+    }
+    // Reset selected phase when the demand itself advances to a new phase
+    if(currentDemand && currentDemand.id === payload.demand.id && currentDemand.phase !== payload.demand.phase){
+      selectedPhase = payload.demand.phase || 'unknown';
+      displayedDemandId = payload.demand.id;
     }
     currentDemand = payload.demand;
     hide(emptyDetail);
@@ -723,7 +730,11 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   }
 
   function showDemandDetail(d){
-    selectedPhase = d.phase || 'unknown';
+    // Keep user's selected phase while viewing the same demand; reset only when demand changes
+    if(displayedDemandId !== d.id || !selectedPhase || selectedPhase === 'unknown' || !d.phases || !(selectedPhase in d.phases)){
+      selectedPhase = d.phase || 'unknown';
+      displayedDemandId = d.id;
+    }
     var phases = d.phases || {};
     var isClosure = d.phase === 'closure';
 
