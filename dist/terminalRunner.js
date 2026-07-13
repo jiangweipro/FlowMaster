@@ -42,62 +42,85 @@ const PHASE_COMMAND_MAP = {
     delivery: '/openflow:close',
     closure: '',
 };
+/**
+ * Manages the execution of OpenFlow commands via child_process.spawn.
+ * Replaces the previous vscode.window.createTerminal-based approach.
+ * Delegates to ProcessManager for process lifecycle and TerminalBridge
+ * for stream-to-message conversion.
+ */
 class TerminalRunner {
-    constructor() {
-        this.terminals = new Map();
+    constructor(processManager, terminalBridge) {
+        this.processManager = processManager;
+        this.terminalBridge = terminalBridge;
+        const folders = vscode.workspace.workspaceFolders;
+        this.workspaceRoot = folders && folders.length > 0
+            ? folders[0].uri.fsPath
+            : process.cwd();
     }
+    /**
+     * Run a phase command for the given demand via spawn.
+     * Returns true if the process was started successfully.
+     */
     runPhase(demandId, phase) {
         const command = PHASE_COMMAND_MAP[phase];
-        // Closure phase: no command to run, gracefully skip
+        // Closure phase: no command to run
         if (phase === 'closure' || command === '') {
             vscode.window.showInformationMessage(`[FlowMaster] ${demandId} is already in Closure phase — no action needed.`);
-            return;
+            return false;
         }
         if (!command) {
             vscode.window.showErrorMessage(`[FlowMaster] Unknown phase: ${phase}`);
-            return;
+            return false;
         }
-        const reuse = vscode.workspace.getConfiguration('flowmaster').get('terminalReuse', false);
-        let terminal;
-        if (reuse && this.terminals.has(demandId)) {
-            terminal = this.terminals.get(demandId);
+        const skipPermissions = vscode.workspace.getConfiguration('flowmaster')
+            .get('skipPermissions', false);
+        const args = skipPermissions
+            ? [command, demandId, '--dangerously-skip-permissions']
+            : [command, demandId];
+        try {
+            this.terminalBridge.startProcess(demandId, 'claude', args, this.workspaceRoot);
+            return true;
         }
-        else {
-            // Dispose old terminal for this demand if exists
-            if (this.terminals.has(demandId)) {
-                this.terminals.get(demandId).dispose();
-            }
-            terminal = vscode.window.createTerminal({
-                name: `FlowMaster: ${demandId}`,
-            });
-            if (!terminal) {
-                vscode.window.showErrorMessage(`[FlowMaster] Failed to create terminal for ${demandId}`);
-                return;
-            }
-            this.terminals.set(demandId, terminal);
+        catch (err) {
+            vscode.window.showErrorMessage(`[FlowMaster] Failed to start process for ${demandId}: ${String(err)}`);
+            return false;
         }
-        if (!terminal) {
-            vscode.window.showErrorMessage(`[FlowMaster] No terminal available for ${demandId}`);
-            return;
-        }
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        const cwd = workspaceFolders && workspaceFolders.length > 0
-            ? workspaceFolders[0].uri.fsPath
-            : '';
-        terminal.show();
-        if (cwd) {
-            terminal.sendText(`cd "${cwd}"`);
-        }
-        terminal.sendText(`claude ${command} ${demandId}`);
     }
-    getTerminal(demandId) {
-        return this.terminals.get(demandId);
+    /**
+     * Write input to a process's stdin.
+     */
+    write(demandId, input) {
+        return this.terminalBridge.write(demandId, input);
     }
+    /**
+     * Resize a terminal.
+     */
+    resize(demandId, cols, rows) {
+        this.terminalBridge.resize(demandId, cols, rows);
+    }
+    /**
+     * Kill a specific process.
+     */
+    kill(demandId) {
+        this.terminalBridge.killProcess(demandId);
+    }
+    /**
+     * Get the underlying ProcessManager.
+     */
+    getProcessManager() {
+        return this.processManager;
+    }
+    /**
+     * Get the underlying TerminalBridge.
+     */
+    getTerminalBridge() {
+        return this.terminalBridge;
+    }
+    /**
+     * Dispose all resources.
+     */
     dispose() {
-        for (const [, terminal] of this.terminals) {
-            terminal.dispose();
-        }
-        this.terminals.clear();
+        this.terminalBridge.dispose();
     }
 }
 exports.TerminalRunner = TerminalRunner;

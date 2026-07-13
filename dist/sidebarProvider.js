@@ -116,7 +116,26 @@ body {
   margin-bottom: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
+.btn-icon {
+  background: none;
+  border: 1px solid var(--vscode-panel-border);
+  color: var(--vscode-descriptionForeground);
+  padding: 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+.btn-icon:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-editor-foreground); }
+.btn-icon.spinning svg { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .btn-new {
   width: 100%;
   padding: 6px;
@@ -162,7 +181,12 @@ body {
 </style>
 </head>
 <body>
-  <div id="sidebar-title">需求列表</div>
+  <div id="sidebar-title">
+    <span>需求列表</span>
+    <button id="refreshBtn" class="btn-icon" title="刷新">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+    </button>
+  </div>
   <button id="newDemandBtn" class="btn-new">+ 新建需求</button>
   <div id="errorState" class="state-error hidden"></div>
   <div id="loadingState" class="state-message">加载中...</div>
@@ -175,6 +199,7 @@ body {
   var loadingState = document.getElementById('loadingState');
   var errorState = document.getElementById('errorState');
   var demandList = document.getElementById('demandList');
+  var refreshBtn = document.getElementById('refreshBtn');
 
   var PHASE_LABELS = { design: '设计', testcase: '测试', development: '开发', delivery: '交付', closure: '关闭' };
   var selectedDemandId = null;
@@ -229,6 +254,22 @@ body {
   document.getElementById('newDemandBtn').addEventListener('click', function() {
     vscode.postMessage({ command: 'newDemand' });
   });
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', function() {
+      refreshBtn.classList.add('spinning');
+      if (loadingState) loadingState.classList.remove('hidden');
+      demandList.innerHTML = '';
+      vscode.postMessage({ command: 'refresh' });
+      // Remove spinner after a short delay once refresh responds
+      window.addEventListener('message', function stopSpin(event) {
+        if (event.data && event.data.command === 'stateUpdated') {
+          refreshBtn.classList.remove('spinning');
+          window.removeEventListener('message', stopSpin);
+        }
+      });
+    });
+  }
 
   // Initial load with a short delay so the extension host is ready
   setTimeout(function () {

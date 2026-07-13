@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { StateReader, DemandState } from './stateReader';
 import { TerminalRunner } from './terminalRunner';
+import { ProcessManager } from './processManager';
+import { TerminalBridge } from './terminalBridge';
 import { FileOpener } from './fileOpener';
 
 export interface Message {
@@ -13,13 +15,17 @@ export class FlowMasterPanel {
   private panel: vscode.WebviewPanel | undefined;
   private readonly stateReader: StateReader;
   private readonly terminalRunner: TerminalRunner;
+  private readonly processManager: ProcessManager;
+  private readonly terminalBridge: TerminalBridge;
   private readonly fileOpener: FileOpener;
   private readonly context: vscode.ExtensionContext;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
     this.stateReader = new StateReader();
-    this.terminalRunner = new TerminalRunner();
+    this.processManager = new ProcessManager();
+    this.terminalBridge = new TerminalBridge(this.processManager);
+    this.terminalRunner = new TerminalRunner(this.processManager, this.terminalBridge);
     this.fileOpener = new FileOpener();
   }
 

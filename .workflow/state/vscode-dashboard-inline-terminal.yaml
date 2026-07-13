@@ -1,0 +1,60 @@
+change: vscode-dashboard-inline-terminal
+title: "VSCode Dashboard 内嵌终端（xterm.js）分栏方案"
+status: active
+current_phase: delivery
+
+phases:
+  design:
+    status: done
+    artifacts:
+      - openspec/changes/vscode-dashboard-inline-terminal/proposal.md
+      - openspec/specs/vscode-dashboard-inline-terminal/spec.md
+      - openspec/changes/vscode-dashboard-inline-terminal/design.md
+      - .workflow/reports/vscode-dashboard-inline-terminal/design-report.md
+    report: .workflow/reports/vscode-dashboard-inline-terminal/design-report.md
+    gate:
+      status: passed
+      reviewer: "user"
+      reviewed_at: "2026-07-13T16:10:00+08:00"
+  testcase:
+    status: done
+    artifacts:
+      - openspec/changes/vscode-dashboard-inline-terminal/testing-guide.md
+      - openspec/changes/vscode-dashboard-inline-terminal/tasks.md
+      - .workflow/reports/vscode-dashboard-inline-terminal/testcase-report.md
+    report: .workflow/reports/vscode-dashboard-inline-terminal/testcase-report.md
+    gate:
+      status: passed
+      reviewer: "user"
+      reviewed_at: "2026-07-13T16:30:00+08:00"
+      review_notes: "审核通过，测试用例和任务清单完整，推进到开发阶段"
+  development:
+    status: done
+    artifacts:
+      - src/processManager.ts
+      - src/terminalBridge.ts
+      - src/terminalRunner.ts
+      - src/extension.ts
+      - src/panel.ts
+      - media/style.css
+      - media/script.js
+      - package.json
+      - tests/processManager.test.ts
+      - tests/terminalBridge.test.ts
+      - .workflow/reports/vscode-dashboard-inline-terminal/env-info.md
+      - .workflow/reports/vscode-dashboard-inline-terminal/at-exec-report.md
+    report: .workflow/reports/vscode-dashboard-inline-terminal/at-exec-report.md
+    gate:
+      status: passed
+      reviewer: "user"
+      reviewed_at: "2026-07-13T18:10:00+08:00"
+      review_notes: "审核通过，49/49 测试通过，编译成功，推进到交付阶段"
+  delivery:
+    status: done
+    gate:
+      status: passed
+      reviewer: "user"
+      reviewed_at: "2026-07-13T18:15:00+08:00"
+      review_notes: "交付测试通过，审核通过"
+  closure:
+    status: pending

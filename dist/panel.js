@@ -38,12 +38,16 @@ const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const stateReader_1 = require("./stateReader");
 const terminalRunner_1 = require("./terminalRunner");
+const processManager_1 = require("./processManager");
+const terminalBridge_1 = require("./terminalBridge");
 const fileOpener_1 = require("./fileOpener");
 class FlowMasterPanel {
     constructor(context) {
         this.context = context;
         this.stateReader = new stateReader_1.StateReader();
-        this.terminalRunner = new terminalRunner_1.TerminalRunner();
+        this.processManager = new processManager_1.ProcessManager();
+        this.terminalBridge = new terminalBridge_1.TerminalBridge(this.processManager);
+        this.terminalRunner = new terminalRunner_1.TerminalRunner(this.processManager, this.terminalBridge);
         this.fileOpener = new fileOpener_1.FileOpener();
     }
     createOrShow() {

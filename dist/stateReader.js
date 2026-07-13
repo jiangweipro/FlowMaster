@@ -39,11 +39,16 @@ const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const yaml_1 = require("yaml");
 class StateReader {
-    constructor() {
-        const folders = vscode.workspace.workspaceFolders;
-        this.workspaceRoot = folders && folders.length > 0
-            ? folders[0].uri.fsPath
-            : process.cwd();
+    constructor(workspaceRoot) {
+        if (workspaceRoot) {
+            this.workspaceRoot = workspaceRoot;
+        }
+        else {
+            const folders = vscode.workspace.workspaceFolders;
+            this.workspaceRoot = folders && folders.length > 0
+                ? folders[0].uri.fsPath
+                : process.cwd();
+        }
     }
     readAllStates() {
         const statePath = this.getStatePath();

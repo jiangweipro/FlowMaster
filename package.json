@@ -2,7 +2,7 @@
   "name": "flowmaster-dashboard",
   "displayName": "FlowMaster Dashboard",
   "description": "VSCode Extension WebView UI for OpenFlow workflow management",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -70,12 +70,38 @@
         "flowmaster.terminalReuse": {
           "type": "boolean",
           "default": false,
-          "description": "Reuse existing terminal for the same demand instead of creating a new one"
+          "description": "[DEPRECATED] No longer applicable in spawn mode — terminal sessions are managed per-demand via ProcessManager"
         },
         "flowmaster.skipPermissions": {
           "type": "boolean",
           "default": false,
           "description": "Run Claude Code with --dangerously-skip-permissions to avoid interactive permission prompts on long-running tasks"
+        },
+        "flowmaster.terminal.fontSize": {
+          "type": "number",
+          "default": 14,
+          "minimum": 8,
+          "maximum": 72,
+          "description": "Font size for the inline terminal"
+        },
+        "flowmaster.terminal.fontFamily": {
+          "type": "string",
+          "default": "Consolas, monospace",
+          "description": "Font family for the inline terminal"
+        },
+        "flowmaster.terminal.scrollback": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 0,
+          "maximum": 50000,
+          "description": "Scrollback buffer size for the inline terminal"
+        },
+        "flowmaster.terminal.splitRatio": {
+          "type": "number",
+          "default": 0.6,
+          "minimum": 0.1,
+          "maximum": 0.9,
+          "description": "Initial split ratio for the dashboard/terminal panels (0.1-0.9)"
         }
       }
     }
@@ -101,6 +127,9 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0",
+    "xterm-addon-web-links": "^0.9.0",
     "yaml": "^2.7.0"
   }
 }

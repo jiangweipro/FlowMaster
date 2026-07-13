@@ -344,3 +344,93 @@ body.hc-black .badge-gate-passed,
 body.hc-black .badge-gate-pending {
   border: 1px solid var(--vscode-contrastBorder, #ffffff);
 }
+
+/* ============================================
+   Inline Terminal (xterm.js) — Split Layout
+   ============================================ */
+
+#app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#dashboard-panel {
+  flex: 1 1 60%;
+  overflow-y: auto;
+  min-height: 100px;
+}
+
+#divider {
+  height: 4px;
+  background: var(--vscode-panel-border, #333333);
+  cursor: row-resize;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+  position: relative;
+  z-index: 10;
+}
+
+#divider:hover,
+#divider.active {
+  background: var(--vscode-focusBorder, #007acc);
+}
+
+#terminal-panel {
+  flex: 1 1 40%;
+  overflow: hidden;
+  min-height: 80px;
+  background: var(--vscode-terminal-background, #1e1e1e);
+  position: relative;
+}
+
+#terminal-container {
+  height: 100%;
+  width: 100%;
+  padding: 4px;
+}
+
+#terminal-container .xterm {
+  height: 100%;
+  padding: 4px;
+}
+
+/* Terminal fallback when xterm fails to load */
+#terminal-fallback {
+  display: none;
+  height: 100%;
+  overflow-y: auto;
+  padding: 8px 12px;
+  font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+  color: var(--vscode-terminal-foreground, #cccccc);
+  background: var(--vscode-terminal-background, #1e1e1e);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#terminal-fallback.visible {
+  display: block;
+}
+
+/* Terminal placeholder */
+#terminal-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--vscode-descriptionForeground, #858585);
+  font-size: 13px;
+  font-family: var(--vscode-font-family);
+}
+
+#terminal-placeholder.hidden {
+  display: none;
+}
+
+/* Prevent text selection during drag */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}

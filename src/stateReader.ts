@@ -37,11 +37,15 @@ export interface DemandSummary {
 export class StateReader {
   private workspaceRoot: string;
 
-  constructor() {
-    const folders = vscode.workspace.workspaceFolders;
-    this.workspaceRoot = folders && folders.length > 0
-      ? folders[0].uri.fsPath
-      : process.cwd();
+  constructor(workspaceRoot?: string) {
+    if (workspaceRoot) {
+      this.workspaceRoot = workspaceRoot;
+    } else {
+      const folders = vscode.workspace.workspaceFolders;
+      this.workspaceRoot = folders && folders.length > 0
+        ? folders[0].uri.fsPath
+        : process.cwd();
+    }
   }
 
   readAllStates(): DemandSummary[] {

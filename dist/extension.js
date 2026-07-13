@@ -42,6 +42,8 @@ const os = __importStar(require("os"));
 const child_process_1 = require("child_process");
 const sidebarProvider_1 = require("./sidebarProvider");
 const stateReader_1 = require("./stateReader");
+const processManager_1 = require("./processManager");
+const terminalBridge_1 = require("./terminalBridge");
 // ============================================
 // Extension Entry Point
 // ============================================
@@ -50,19 +52,22 @@ let projectRoot = '';
 let selectedDemandId = null;
 let stateReader;
 let sidebarProvider;
+let processManager;
+let terminalBridge;
+let contextGlobal;
 function activate(context) {
+    contextGlobal = context;
     console.log('[FlowMaster] Extension activating...');
-    // Determine project root
-    projectRoot = context.extensionPath;
+    // Determine project root (prefer the currently opened workspace folder)
     const folders = vscode.workspace.workspaceFolders;
-    if (folders && folders.length > 0) {
-        const wsRoot = folders[0].uri.fsPath;
-        if (fs.existsSync(path.join(wsRoot, '.workflow', 'state'))) {
-            projectRoot = wsRoot;
-        }
-    }
+    projectRoot = (folders && folders.length > 0)
+        ? folders[0].uri.fsPath
+        : process.cwd();
     console.log('[FlowMaster] Project root:', projectRoot);
-    stateReader = new stateReader_1.StateReader();
+    stateReader = new stateReader_1.StateReader(projectRoot);
+    // Initialize ProcessManager and TerminalBridge
+    processManager = new processManager_1.ProcessManager();
+    terminalBridge = new terminalBridge_1.TerminalBridge(processManager);
     sidebarProvider = new sidebarProvider_1.FlowMasterSidebarProvider(stateReader, context);
     // Register sidebar view
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(sidebarProvider_1.FlowMasterSidebarProvider.viewType, sidebarProvider));
@@ -91,8 +96,6 @@ function activate(context) {
     statusBar.tooltip = 'Open FlowMaster Dashboard';
     statusBar.show();
     context.subscriptions.push(statusBar);
-    // Auto-launch dashboard is disabled: the sidebar is the entry point.
-    // createPanel(context);
     // Auto-refresh every 30 seconds
     const refreshTimer = setInterval(() => {
         refreshAll();
@@ -103,6 +106,9 @@ function activate(context) {
 function deactivate() {
     panel?.dispose();
     panel = undefined;
+    if (processManager) {
+        processManager.killAll();
+    }
 }
 // ============================================
 // Panel Management
@@ -114,8 +120,25 @@ const PHASE_COMMAND_MAP = {
     delivery: '/openflow:close',
 };
 function createPanel(context) {
-    panel = vscode.window.createWebviewPanel('flowmasterDashboard', 'FlowMaster 控制台', vscode.ViewColumn.One, { enableScripts: true, retainContextWhenHidden: true });
-    panel.webview.html = getHtml();
+    panel = vscode.window.createWebviewPanel('flowmasterDashboard', 'FlowMaster 控制台', vscode.ViewColumn.One, {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+            vscode.Uri.file(path.join(context.extensionPath, 'media')),
+            vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm')),
+            vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm-addon-fit')),
+            vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm-addon-web-links')),
+        ],
+    });
+    panel.webview.html = getHtml(panel.webview, context);
+    // Wire up terminal bridge message callback
+    if (terminalBridge) {
+        terminalBridge.setMessageCallback((msg) => {
+            if (panel) {
+                panel.webview.postMessage(msg);
+            }
+        });
+    }
     panel.webview.onDidReceiveMessage((msg) => handleMessage(msg), undefined, context.subscriptions);
     panel.onDidDispose(() => { panel = undefined; });
     sendSelectedDemand();
@@ -128,23 +151,70 @@ function handleMessage(msg) {
             sendSelectedDemand();
             break;
         case 'runPhase':
-            runPhase(msg.demandId, msg.phase);
+            runPhase(msg.demandId || msg.payload?.demandId, msg.phase || msg.payload?.phase);
             break;
         case 'openFile':
-            openFile(msg.path);
+            openFile(msg.path || msg.payload?.path);
             break;
         case 'reviewGate':
-            reviewGate(msg.demandId, msg.action);
+            reviewGate(msg.demandId || msg.payload?.demandId, msg.action || msg.payload?.action);
             break;
         case 'toggleSkipPermissions':
             toggleSkipPermissions();
             break;
+        case 'terminalInput': {
+            const demandId = msg.payload?.demandId;
+            const data = msg.payload?.data;
+            if (demandId && data && terminalBridge) {
+                terminalBridge.write(demandId, data);
+            }
+            break;
+        }
+        case 'terminalResize': {
+            const demandId = msg.payload?.demandId;
+            const cols = msg.payload?.cols;
+            const rows = msg.payload?.rows;
+            if (demandId && terminalBridge) {
+                terminalBridge.resize(demandId, cols, rows);
+            }
+            break;
+        }
+        case 'switchTerminal': {
+            const demandId = msg.payload?.demandId;
+            if (demandId && terminalBridge) {
+                // Send buffered output for the switched demand
+                const buffer = terminalBridge.getBuffer(demandId);
+                if (buffer) {
+                    panel.webview.postMessage({
+                        command: 'terminalOutput',
+                        demandId,
+                        data: buffer,
+                    });
+                }
+                // If the process is still running, send start notification
+                if (processManager?.hasProcess(demandId)) {
+                    panel.webview.postMessage({
+                        command: 'terminalStart',
+                        demandId,
+                        phase: '',
+                    });
+                }
+            }
+            break;
+        }
     }
 }
 function refreshAll() {
     sidebarProvider?.refresh();
     if (panel)
         sendSelectedDemand();
+}
+function ensurePanelOpen() {
+    if (panel) {
+        panel.reveal();
+        return;
+    }
+    createPanel(contextGlobal);
 }
 // ============================================
 // State Reader
@@ -176,18 +246,20 @@ function getSkipPermissionsFlag() {
 }
 function runPhase(demandId, phase) {
     const root = getProjectRoot();
-    const terminal = vscode.window.createTerminal({ name: `FlowMaster: ${demandId}` });
     const skipFlag = getSkipPermissionsFlag();
-    terminal.show();
-    terminal.sendText(`cd "${root}"`);
     if (phase === 'propose' || phase === 'design') {
         if (!ensureOpenflowDesignSkill())
             return;
-        terminal.sendText(`claude${skipFlag} /openflow:design`);
+        ensurePanelOpen();
+        const args = skipFlag ? [skipFlag.trim(), '/openflow:design'] : ['/openflow:design'];
+        terminalBridge?.startProcess(demandId, 'claude', args, root);
         return;
     }
     if (phase === 'closure') {
-        terminal.sendText(`claude${skipFlag} /openflow:close ${demandId}`);
+        // Use spawn for closure phase
+        if (terminalBridge) {
+            terminalBridge.startProcess(demandId, 'claude', [`/openflow:close ${demandId}`], root);
+        }
         return;
     }
     const command = PHASE_COMMAND_MAP[phase];
@@ -195,17 +267,19 @@ function runPhase(demandId, phase) {
         vscode.window.showErrorMessage(`[FlowMaster] 未知阶段: ${phase}`);
         return;
     }
-    terminal.sendText(`claude${skipFlag} ${command} ${demandId}`);
+    // Use spawn-based process for all other phases
+    if (terminalBridge) {
+        terminalBridge.startProcess(demandId, 'claude', [command, demandId], root);
+    }
 }
 function runOpenflowDesign() {
     if (!ensureOpenflowDesignSkill())
         return;
     const root = getProjectRoot();
-    const terminal = vscode.window.createTerminal({ name: 'FlowMaster: New Demand' });
     const skipFlag = getSkipPermissionsFlag();
-    terminal.show();
-    terminal.sendText(`cd "${root}"`);
-    terminal.sendText(`claude${skipFlag} /openflow:design`);
+    ensurePanelOpen();
+    const args = skipFlag ? [skipFlag.trim(), '/openflow:design'] : ['/openflow:design'];
+    terminalBridge?.startProcess('flowmaster:new', 'claude', args, root);
 }
 function hasOpenflowDesignSkill() {
     const root = getProjectRoot();
@@ -311,18 +385,32 @@ function reviewGate(demandId, action) {
 }
 // ============================================
 // WebView HTML (inlined CSS + JS, Chinese UI)
-// Main dashboard: workflow-only view for the selected demand
+// Main dashboard: workflow-only view + inline terminal
 // ============================================
-function getHtml() {
+function getHtml(webview, context) {
+    // Get xterm.js URIs
+    const xtermCssUri = webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm', 'css', 'xterm.css')));
+    const xtermJsUri = webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm', 'lib', 'xterm.js')));
+    const fitAddonJsUri = webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm-addon-fit', 'lib', 'xterm-addon-fit.js')));
+    const webLinksAddonJsUri = webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm-addon-web-links', 'lib', 'xterm-addon-web-links.js')));
+    // Read configuration for terminal defaults
+    const cfg = vscode.workspace.getConfiguration('flowmaster');
+    const terminalFontSize = cfg.get('terminal.fontSize', 14);
+    const terminalFontFamily = cfg.get('terminal.fontFamily', 'Consolas, monospace');
+    const terminalScrollback = cfg.get('terminal.scrollback', 1000);
+    const splitRatio = cfg.get('terminal.splitRatio', 0.6);
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource}; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'unsafe-inline' ${webview.cspSource};">
+<link rel="stylesheet" href="${xtermCssUri}">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px);color:var(--vscode-editor-foreground);background:var(--vscode-editor-background);height:100vh;display:flex;flex-direction:column}
+html,body{height:100%;overflow:hidden}
+body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px);color:var(--vscode-editor-foreground);background:var(--vscode-editor-background)}
+#app{display:flex;flex-direction:column;height:100vh}
 #header{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
 #header h1{font-size:15px;font-weight:600}
 .btn{cursor:pointer;border:none;border-radius:4px;padding:5px 12px;font-size:12px;font-family:inherit;transition:opacity .15s}
@@ -336,7 +424,20 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 .state-message{text-align:center;padding:32px;color:var(--vscode-descriptionForeground)}
 .state-message.hidden{display:none}
 .state-error{color:var(--vscode-errorForeground);background:var(--vscode-inputValidation-errorBackground);border:1px solid var(--vscode-inputValidation-errorBorder);border-radius:4px;padding:8px 12px;margin:8px 16px}
-#main{flex:1;padding:16px;overflow-y:auto}
+/* Dashboard panel (upper) */
+#dashboard-panel{flex:${Math.round(splitRatio * 100)} 1 0;min-height:100px;overflow-y:auto;padding:16px}
+/* Splitter */
+#divider{height:4px;background:var(--vscode-panel-border,#333);cursor:row-resize;flex-shrink:0;transition:background .15s;z-index:10}
+#divider:hover,#divider.active{background:var(--vscode-focusBorder,#007acc)}
+/* Terminal panel (lower) */
+#terminal-panel{flex:${Math.round((1 - splitRatio) * 100)} 1 0;min-height:80px;overflow:hidden;background:var(--vscode-terminal-background,#1e1e1e);position:relative}
+#terminal-container{height:100%;width:100%;padding:4px}
+#terminal-container .xterm{height:100%;padding:4px}
+#terminal-fallback{display:none;height:100%;overflow-y:auto;padding:8px 12px;font-family:var(--vscode-editor-font-family,'Consolas',monospace);font-size:var(--vscode-editor-font-size,13px);color:var(--vscode-terminal-foreground,#ccc);background:var(--vscode-terminal-background,#1e1e1e);white-space:pre-wrap;word-break:break-all}
+#terminal-fallback.visible{display:block}
+#terminal-placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground,#858585);font-size:13px;font-family:var(--vscode-font-family)}
+#terminal-placeholder.hidden{display:none}
+.no-select{user-select:none;-webkit-user-select:none}
 /* Demand header */
 .demand-header{margin-bottom:16px}
 .demand-header .dh-name{font-size:16px;font-weight:600}
@@ -389,11 +490,22 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   </header>
   <div id="loadingState" class="state-message">加载中...</div>
   <div id="errorState" class="state-message state-error hidden"></div>
-  <div id="main">
+  <div id="dashboard-panel">
     <div id="mainContent"></div>
     <div id="emptyDetail" class="state-message">请从左侧 FlowMaster 侧边栏选择一个需求</div>
   </div>
+  <div id="divider"></div>
+  <div id="terminal-panel">
+    <div id="terminal-container"></div>
+    <div id="terminal-placeholder">终端准备就绪，点击"执行"启动...</div>
+    <div id="terminal-fallback"></div>
+  </div>
 </div>
+<!-- xterm.js configuration -->
+<meta id="xterm-config" data-config='{"fontSize":${terminalFontSize},"fontFamily":"${terminalFontFamily}","scrollback":${terminalScrollback}}'>
+<script src="${xtermJsUri}"></script>
+<script src="${fitAddonJsUri}"></script>
+<script src="${webLinksAddonJsUri}"></script>
 <script>
 (function(){
   'use strict';
@@ -405,6 +517,12 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   var refreshBtn = document.getElementById('refreshBtn');
   var skipPermBtn = document.getElementById('skipPermBtn');
   var skipPermissionsEnabled = false;
+  var terminalContainer = document.getElementById('terminal-container');
+  var terminalPlaceholder = document.getElementById('terminal-placeholder');
+  var terminalFallback = document.getElementById('terminal-fallback');
+  var divider = document.getElementById('divider');
+  var dashboardPanel = document.getElementById('dashboard-panel');
+  var terminalPanel = document.getElementById('terminal-panel');
 
   var PHASE_ORDER = ['design','testcase','development','delivery','closure'];
   var PHASE_LABELS = {design:'设计',testcase:'测试',development:'开发',delivery:'交付',closure:'关闭'};
@@ -412,18 +530,182 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 
   var currentDemand = null;
   var selectedPhase = null;
+  var currentDemandId = null;
+  var xterm = null;
+  var fitAddon = null;
+  var webLinksAddon = null;
+  var isDragging = false;
+  var dragStartY = 0;
+  var dragStartFlex = 0.6;
+  var minDashboardHeight = 100;
+  var minTerminalHeight = 80;
+  var xtermReady = false;
 
   window.addEventListener('message',function(e){
     var msg = e.data;
     if(msg.command === 'stateUpdated'){ handleState(msg.payload); }
     if(msg.command === 'skipPermissionsChanged'){ updateSkipButton(msg.payload.enabled); }
+    if(msg.command === 'terminalOutput'){ handleTerminalOutput(msg); }
+    if(msg.command === 'terminalExit'){ handleTerminalExit(msg); }
+    if(msg.command === 'terminalError'){ handleTerminalError(msg); }
+    if(msg.command === 'terminalStart'){ handleTerminalStart(msg); }
   });
 
+  // --- Terminal handlers ---
+  function handleTerminalOutput(msg){
+    if(xterm && xtermReady){
+      xterm.write(msg.data);
+    } else if(terminalFallback){
+      terminalFallback.classList.add('visible');
+      terminalFallback.textContent += msg.data;
+    }
+  }
+  function handleTerminalExit(msg){
+    var exitMsg = '\\r\\n[进程已退出，退出码: ' + msg.code + ']';
+    if(xterm && xtermReady){ xterm.write(exitMsg); }
+    else if(terminalFallback){ terminalFallback.textContent += exitMsg; }
+    if(msg.demandId){ currentDemandId = null; }
+  }
+  function handleTerminalError(msg){
+    var errMsg = '\\r\\n[错误: ' + msg.error + ']';
+    if(xterm && xtermReady){ xterm.write('\\x1b[31m' + errMsg + '\\x1b[0m'); }
+    else if(terminalFallback){ terminalFallback.textContent += errMsg; }
+  }
+  function handleTerminalStart(msg){
+    if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
+    if(msg.demandId) currentDemandId = msg.demandId;
+  }
+
+  // --- xterm init ---
+  function initTerminal(){
+    if(!terminalContainer) return;
+    if(typeof Terminal === 'undefined'){
+      if(terminalFallback){ terminalFallback.classList.add('visible'); terminalFallback.textContent = '[xterm.js 未加载，使用纯文本输出]\\r\\n'; }
+      if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
+      return;
+    }
+    try {
+      var configMeta = document.getElementById('xterm-config');
+      var config = configMeta ? JSON.parse(configMeta.getAttribute('data-config')||'{}') : {};
+      var bg = getComputedStyle(document.documentElement).getPropertyValue('--vscode-terminal-background').trim()||'#1e1e1e';
+      var fg = getComputedStyle(document.documentElement).getPropertyValue('--vscode-terminal-foreground').trim()||'#cccccc';
+      var cursor = getComputedStyle(document.documentElement).getPropertyValue('--vscode-terminalCursor-foreground').trim()||fg;
+      var selBg = getComputedStyle(document.documentElement).getPropertyValue('--vscode-terminal-selectionBackground').trim()||'#264f78';
+
+      function vscColor(varName, fallback){
+        var v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+        return v || fallback;
+      }
+
+      xterm = new Terminal({
+        fontSize: config.fontSize||14,
+        fontFamily: config.fontFamily||"Consolas, 'Courier New', monospace",
+        scrollback: config.scrollback||1000,
+        theme: {
+          background: bg, foreground: fg, cursor: cursor, selectionBackground: selBg,
+          black: vscColor('--vscode-terminal-ansiBlack','#000000'),
+          red: vscColor('--vscode-terminal-ansiRed','#cd3131'),
+          green: vscColor('--vscode-terminal-ansiGreen','#0dbc79'),
+          yellow: vscColor('--vscode-terminal-ansiYellow','#e5e510'),
+          blue: vscColor('--vscode-terminal-ansiBlue','#2472c8'),
+          magenta: vscColor('--vscode-terminal-ansiMagenta','#bc3fbc'),
+          cyan: vscColor('--vscode-terminal-ansiCyan','#11a8cd'),
+          white: vscColor('--vscode-terminal-ansiWhite','#e5e5e5'),
+          brightBlack: vscColor('--vscode-terminal-ansiBrightBlack','#666666'),
+          brightRed: vscColor('--vscode-terminal-ansiBrightRed','#f14c4c'),
+          brightGreen: vscColor('--vscode-terminal-ansiBrightGreen','#23d18b'),
+          brightYellow: vscColor('--vscode-terminal-ansiBrightYellow','#f5f543'),
+          brightBlue: vscColor('--vscode-terminal-ansiBrightBlue','#3b8eea'),
+          brightMagenta: vscColor('--vscode-terminal-ansiBrightMagenta','#d670d6'),
+          brightCyan: vscColor('--vscode-terminal-ansiBrightCyan','#29b8db'),
+          brightWhite: vscColor('--vscode-terminal-ansiBrightWhite','#e5e5e5')
+        },
+        allowTransparency: true, cursorBlink: true, cursorStyle: 'block'
+      });
+
+      if(typeof FitAddon !== 'undefined'){
+        fitAddon = new FitAddon();
+        xterm.loadAddon(fitAddon);
+      }
+      if(typeof WebLinksAddon !== 'undefined'){
+        webLinksAddon = new WebLinksAddon();
+        xterm.loadAddon(webLinksAddon);
+      }
+
+      xterm.open(terminalContainer);
+      if(fitAddon){
+        setTimeout(function(){ try{ fitAddon.fit(); }catch(e){} },100);
+      }
+      xtermReady = true;
+      if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
+      xterm.write('\\x1b[33mFlowMaster 终端就绪\\x1b[0m\\r\\n点击"执行"按钮启动命令\\r\\n\\n');
+
+      xterm.onData(function(data){
+        if(currentDemandId){
+          try{ api.postMessage({command:'terminalInput',payload:{demandId:currentDemandId,data:data}}); }catch(e){}
+        }
+      });
+
+      // Re-fit on resize
+      window.addEventListener('resize', function(){ fitTerminal(); });
+    } catch(e){
+      if(terminalFallback){ terminalFallback.classList.add('visible'); terminalFallback.textContent = '[xterm 初始化失败: ' + e.message + ']\\r\\n'; }
+      if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
+    }
+  }
+
+  function fitTerminal(){
+    if(fitAddon && xterm && xtermReady){
+      try{
+        fitAddon.fit();
+        if(currentDemandId){
+          api.postMessage({command:'terminalResize',payload:{demandId:currentDemandId,cols:xterm.cols,rows:xterm.rows}});
+        }
+      }catch(e){}
+    }
+  }
+
+  // --- Splitter drag ---
+  function initSplitter(){
+    if(!divider || !dashboardPanel || !terminalPanel) return;
+    divider.addEventListener('mousedown',function(e){
+      isDragging = true;
+      dragStartY = e.clientY;
+      var currentFlex = dashboardPanel.style.flex;
+      dragStartFlex = currentFlex ? parseFloat(currentFlex)/100 : 0.6;
+      divider.classList.add('active');
+      document.body.classList.add('no-select');
+      document.addEventListener('mousemove',onDragMove);
+      document.addEventListener('mouseup',onDragUp);
+    });
+  }
+  function onDragMove(e){
+    if(!isDragging) return;
+    var containerHeight = document.getElementById('app').clientHeight;
+    if(containerHeight <= 0) return;
+    var deltaRatio = (e.clientY - dragStartY) / containerHeight;
+    var newRatio = dragStartFlex + deltaRatio;
+    var maxR = 1 - minTerminalHeight/containerHeight;
+    var minR = minDashboardHeight/containerHeight;
+    newRatio = Math.max(minR, Math.min(maxR, newRatio));
+    dashboardPanel.style.flex = (newRatio * 100) + ' 1 0';
+    terminalPanel.style.flex = ((1-newRatio) * 100) + ' 1 0';
+    fitTerminal();
+  }
+  function onDragUp(){
+    isDragging = false;
+    divider.classList.remove('active');
+    document.body.classList.remove('no-select');
+    document.removeEventListener('mousemove',onDragMove);
+    document.removeEventListener('mouseup',onDragUp);
+    fitTerminal();
+  }
+
+  // --- State handling ---
   function handleState(payload){
     hide(loadingState); hide(errorState);
     if(!payload){ showError('响应无效'); return; }
     if(payload.error){ showError(payload.error); }
-
     if(payload.noDemands || !payload.demand){
       currentDemand = null;
       mainContent.innerHTML = '';
@@ -431,7 +713,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       emptyDetail.textContent = '暂无需求，请从左侧创建新需求';
       return;
     }
-
     currentDemand = payload.demand;
     hide(emptyDetail);
     showDemandDetail(currentDemand);
@@ -442,7 +723,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     var phases = d.phases || {};
     var isClosure = d.phase === 'closure';
 
-    // Phase boxes
     var phaseBoxes = PHASE_ORDER.map(function(p){
       var pdata = phases[p]||{};
       var cls = 'phase-box';
@@ -463,7 +743,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
         gateHtml+'</div>';
     }).join('');
 
-    // Phase artifacts for selected phase
     var selPhaseData = phases[selectedPhase]||{};
     var selArtifacts = selPhaseData.artifacts||[];
     var selArtHtml = '';
@@ -493,7 +772,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
         '<span class="gate-label">'+(d.gate === 'passed' ? '✓ 已通过' : d.gate === 'pending' ? '⏱ 待审核' : d.gate === 'rejected' ? '✗ 已打回' : '审核: '+d.gate)+'</span>'+
       '</div>';
 
-    // Phase box click: select
+    // Phase box click
     document.querySelectorAll('.phase-box').forEach(function(el){
       el.addEventListener('click',function(){
         var pid = this.getAttribute('data-phase');
@@ -508,6 +787,10 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     if(execBtn){
       execBtn.addEventListener('click',function(){
         this.disabled = true; this.textContent = '执行中...';
+        currentDemandId = d.id;
+        // Clear terminal for new execution
+        if(xterm && xtermReady){ xterm.reset(); xterm.write('\\x1b[33mStarting...\\x1b[0m\\r\\n\\n'); }
+        else if(terminalFallback){ terminalFallback.textContent = ''; }
         api.postMessage({command:'runPhase',demandId:d.id,phase:selectedPhase});
         setTimeout(function(){ if(execBtn){ execBtn.disabled=false; execBtn.textContent='▶ 执行 '+esc(PHASE_LABELS[selectedPhase]||selectedPhase); }},5000);
       });
@@ -558,8 +841,11 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       api.postMessage({command:'toggleSkipPermissions'});
     });
   }
-
   if(refreshBtn){ refreshBtn.addEventListener('click',function(){ hide(errorState); api.postMessage({command:'refreshState'}); }); }
+
+  // Initialize
+  initSplitter();
+  initTerminal();
   api.postMessage({command:'refreshState'});
   setTimeout(function(){ if(loadingState&&!loadingState.classList.contains('hidden')){ showError('无法连接扩展进程'); }},8000);
 })();
