@@ -91,8 +91,8 @@ function activate(context) {
     statusBar.tooltip = 'Open FlowMaster Dashboard';
     statusBar.show();
     context.subscriptions.push(statusBar);
-    // Auto-launch dashboard
-    createPanel(context);
+    // Auto-launch dashboard is disabled: the sidebar is the entry point.
+    // createPanel(context);
     // Auto-refresh every 30 seconds
     const refreshTimer = setInterval(() => {
         refreshAll();

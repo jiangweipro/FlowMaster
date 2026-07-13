@@ -230,8 +230,22 @@ body {
     vscode.postMessage({ command: 'newDemand' });
   });
 
-  // Initial load
-  vscode.postMessage({ command: 'refresh' });
+  // Initial load with a short delay so the extension host is ready
+  setTimeout(function () {
+    try {
+      if (loadingState) loadingState.classList.remove('hidden');
+      vscode.postMessage({ command: 'refresh' });
+    } catch (e) {
+      showError('无法发送刷新请求: ' + e.message);
+    }
+  }, 200);
+
+  // Timeout: if no response after 8 seconds, prompt user to reload
+  setTimeout(function () {
+    if (loadingState && !loadingState.classList.contains('hidden')) {
+      showError('未收到扩展进程响应，请尝试重新加载窗口。');
+    }
+  }, 8000);
 })();
 </script>
 </body>

@@ -30,6 +30,10 @@
       {
         "command": "flowmaster.refresh",
         "title": "FlowMaster: Refresh Dashboard"
+      },
+      {
+        "command": "flowmaster.newDemand",
+        "title": "FlowMaster: New Demand"
       }
     ],
     "viewsContainers": {
