@@ -256,10 +256,8 @@ function runPhase(demandId: string, phase: string): void {
     return;
   }
   if (phase === 'closure') {
-    // Use spawn for closure phase
-    if (terminalBridge) {
-      terminalBridge.startProcess(demandId, 'claude', [`/openflow:close ${demandId}`], root);
-    }
+    const args = skipFlag ? [skipFlag.trim(), '/openflow:close', demandId] : ['/openflow:close', demandId];
+    terminalBridge?.startProcess(demandId, 'claude', args, root);
     return;
   }
   const command = PHASE_COMMAND_MAP[phase];
@@ -269,9 +267,8 @@ function runPhase(demandId: string, phase: string): void {
   }
 
   // Use spawn-based process for all other phases
-  if (terminalBridge) {
-    terminalBridge.startProcess(demandId, 'claude', [command, demandId], root);
-  }
+  const args = skipFlag ? [skipFlag.trim(), command, demandId] : [command, demandId];
+  terminalBridge?.startProcess(demandId, 'claude', args, root);
 }
 
 function runOpenflowDesign(): void {
