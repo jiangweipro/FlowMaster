@@ -38,6 +38,7 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
 const child_process_1 = require("child_process");
 const sidebarProvider_1 = require("./sidebarProvider");
 const stateReader_1 = require("./stateReader");
@@ -80,7 +81,7 @@ function activate(context) {
         refreshAll();
     });
     const newDemandCmd = vscode.commands.registerCommand('flowmaster.newDemand', () => {
-        runPropose();
+        runOpenflowDesign();
     });
     context.subscriptions.push(openCmd, refreshCmd, newDemandCmd);
     // Status bar button
@@ -179,8 +180,10 @@ function runPhase(demandId, phase) {
     const skipFlag = getSkipPermissionsFlag();
     terminal.show();
     terminal.sendText(`cd "${root}"`);
-    if (phase === 'propose') {
-        terminal.sendText(`claude${skipFlag} /opsx:propose`);
+    if (phase === 'propose' || phase === 'design') {
+        if (!ensureOpenflowDesignSkill())
+            return;
+        terminal.sendText(`claude${skipFlag} /openflow:design`);
         return;
     }
     if (phase === 'closure') {
@@ -194,13 +197,30 @@ function runPhase(demandId, phase) {
     }
     terminal.sendText(`claude${skipFlag} ${command} ${demandId}`);
 }
-function runPropose() {
+function runOpenflowDesign() {
+    if (!ensureOpenflowDesignSkill())
+        return;
     const root = getProjectRoot();
     const terminal = vscode.window.createTerminal({ name: 'FlowMaster: New Demand' });
     const skipFlag = getSkipPermissionsFlag();
     terminal.show();
     terminal.sendText(`cd "${root}"`);
-    terminal.sendText(`claude${skipFlag} /opsx:propose`);
+    terminal.sendText(`claude${skipFlag} /openflow:design`);
+}
+function hasOpenflowDesignSkill() {
+    const root = getProjectRoot();
+    const home = os.homedir();
+    const candidates = [
+        path.join(root, '.claude', 'skills', 'openflow-design', 'SKILL.md'),
+        path.join(home, '.claude', 'skills', 'openflow-design', 'SKILL.md'),
+    ];
+    return candidates.some(p => fs.existsSync(p));
+}
+function ensureOpenflowDesignSkill() {
+    if (hasOpenflowDesignSkill())
+        return true;
+    vscode.window.showInformationMessage('[FlowMaster] 未检测到 openflow-design 技能，请先在 .claude/skills 或 ~/.claude/skills 中添加该技能。');
+    return false;
 }
 function toggleSkipPermissions() {
     const cfg = vscode.workspace.getConfiguration('flowmaster');
