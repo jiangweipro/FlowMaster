@@ -23,63 +23,68 @@ let contextGlobal: vscode.ExtensionContext;
 
 export function activate(context: vscode.ExtensionContext): void {
   contextGlobal = context;
-  console.log('[FlowMaster] Extension activating...');
+  try {
+    console.log('[FlowMaster] Extension activating...');
 
-  // Determine project root (prefer the currently opened workspace folder)
-  const folders = vscode.workspace.workspaceFolders;
-  projectRoot = (folders && folders.length > 0)
-    ? folders[0].uri.fsPath
-    : process.cwd();
-  console.log('[FlowMaster] Project root:', projectRoot);
+    // Determine project root (prefer the currently opened workspace folder)
+    const folders = vscode.workspace.workspaceFolders;
+    projectRoot = (folders && folders.length > 0)
+      ? folders[0].uri.fsPath
+      : process.cwd();
+    console.log('[FlowMaster] Project root:', projectRoot);
 
-  stateReader = new StateReader(projectRoot);
+    stateReader = new StateReader(projectRoot);
 
-  // Initialize ProcessManager and TerminalBridge
-  processManager = new ProcessManager();
-  terminalBridge = new TerminalBridge(processManager);
+    // Initialize ProcessManager and TerminalBridge
+    processManager = new ProcessManager();
+    terminalBridge = new TerminalBridge(processManager);
 
-  sidebarProvider = new FlowMasterSidebarProvider(stateReader, context);
+    sidebarProvider = new FlowMasterSidebarProvider(stateReader, context);
 
-  // Register sidebar view
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(
-      FlowMasterSidebarProvider.viewType,
-      sidebarProvider
-    )
-  );
+    // Register sidebar view
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider(
+        FlowMasterSidebarProvider.viewType,
+        sidebarProvider
+      )
+    );
 
-  // Register commands
-  const openCmd = vscode.commands.registerCommand('flowmaster.openDashboard', (demandId?: string) => {
-    if (demandId && typeof demandId === 'string') selectedDemandId = demandId;
-    if (panel) { panel.reveal(); sendSelectedDemand(); return; }
-    createPanel(context);
-  });
+    // Register commands
+    const openCmd = vscode.commands.registerCommand('flowmaster.openDashboard', (demandId?: string) => {
+      if (demandId && typeof demandId === 'string') selectedDemandId = demandId;
+      if (panel) { panel.reveal(); sendSelectedDemand(); return; }
+      createPanel(context);
+    });
 
-  const refreshCmd = vscode.commands.registerCommand('flowmaster.refresh', () => {
-    refreshAll();
-  });
+    const refreshCmd = vscode.commands.registerCommand('flowmaster.refresh', () => {
+      refreshAll();
+    });
 
-  const newDemandCmd = vscode.commands.registerCommand('flowmaster.newDemand', () => {
-    runOpenflowDesign();
-  });
+    const newDemandCmd = vscode.commands.registerCommand('flowmaster.newDemand', () => {
+      runOpenflowDesign();
+    });
 
-  context.subscriptions.push(openCmd, refreshCmd, newDemandCmd);
+    context.subscriptions.push(openCmd, refreshCmd, newDemandCmd);
 
-  // Status bar button
-  const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  statusBar.text = '$(project) FlowMaster';
-  statusBar.command = 'flowmaster.openDashboard';
-  statusBar.tooltip = 'Open FlowMaster Dashboard';
-  statusBar.show();
-  context.subscriptions.push(statusBar);
+    // Status bar button
+    const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBar.text = '$(project) FlowMaster';
+    statusBar.command = 'flowmaster.openDashboard';
+    statusBar.tooltip = 'Open FlowMaster Dashboard';
+    statusBar.show();
+    context.subscriptions.push(statusBar);
 
-  // Auto-refresh every 30 seconds
-  const refreshTimer = setInterval(() => {
-    refreshAll();
-  }, 30000);
-  context.subscriptions.push({ dispose: () => clearInterval(refreshTimer) });
+    // Auto-refresh every 30 seconds
+    const refreshTimer = setInterval(() => {
+      refreshAll();
+    }, 30000);
+    context.subscriptions.push({ dispose: () => clearInterval(refreshTimer) });
 
-  console.log('[FlowMaster] Extension activated.');
+    console.log('[FlowMaster] Extension activated.');
+  } catch (err) {
+    console.error('[FlowMaster] Activation failed:', err);
+    vscode.window.showErrorMessage(`[FlowMaster] 扩展激活失败: ${String(err)}`);
+  }
 }
 
 export function deactivate(): void {

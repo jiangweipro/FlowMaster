@@ -21,43 +21,55 @@ export class FlowMasterSidebarProvider implements vscode.WebviewViewProvider {
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ): void {
-    this._view = webviewView;
+    try {
+      this._view = webviewView;
 
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [this.context.extensionUri]
-    };
+      webviewView.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [this.context.extensionUri]
+      };
 
-    webviewView.webview.html = this.getHtml();
+      webviewView.webview.html = this.getHtml();
 
-    webviewView.webview.onDidReceiveMessage(async (message) => {
-      switch (message.command) {
-        case 'selectDemand': {
-          const demandId = message.demandId as string;
-          if (demandId) {
-            await vscode.commands.executeCommand('flowmaster.openDashboard', demandId);
+      webviewView.webview.onDidReceiveMessage(async (message) => {
+        try {
+          switch (message.command) {
+            case 'selectDemand': {
+              const demandId = message.demandId as string;
+              if (demandId) {
+                await vscode.commands.executeCommand('flowmaster.openDashboard', demandId);
+              }
+              break;
+            }
+            case 'newDemand': {
+              await vscode.commands.executeCommand('flowmaster.newDemand');
+              break;
+            }
+            case 'refresh': {
+              this.refresh();
+              break;
+            }
+            case 'ready': {
+              this.refresh();
+              break;
+            }
           }
-          break;
+        } catch (err) {
+          console.error('[FlowMaster] Sidebar message handler error:', err);
+          this._view?.webview.postMessage({ command: 'stateUpdated', payload: { demands: [], error: String(err) } });
         }
-        case 'newDemand': {
-          await vscode.commands.executeCommand('flowmaster.newDemand');
-          break;
-        }
-        case 'refresh': {
+      });
+
+      // Refresh as soon as the view becomes visible
+      webviewView.onDidChangeVisibility(() => {
+        if (webviewView.visible) {
           this.refresh();
-          break;
         }
-      }
-    });
-
-    // Refresh as soon as the view becomes visible
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) {
-        this.refresh();
-      }
-    });
-
-    this.refresh();
+      });
+    } catch (err) {
+      console.error('[FlowMaster] resolveWebviewView failed:', err);
+      vscode.window.showErrorMessage(`[FlowMaster] 侧边栏初始化失败: ${String(err)}`);
+    }
   }
 
   refresh(): void {
@@ -162,21 +174,26 @@ body {
 </style>
 </head>
 <body>
-  <div id="sidebar-title">
-    <span>需求列表</span>
-    <button id="refreshBtn" class="btn-icon" title="刷新">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-    </button>
+  <div id="fallback" style="padding:12px 10px;font-size:12px;color:var(--vscode-descriptionForeground)">FlowMaster 侧边栏加载中...</div>
+  <div id="app" style="display:none">
+    <div id="sidebar-title">
+      <span>需求列表</span>
+      <button id="refreshBtn" class="btn-icon" title="刷新">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+      </button>
+    </div>
+    <button id="newDemandBtn" class="btn-new">+ 新建需求</button>
+    <div id="errorState" class="state-error hidden"></div>
+    <div id="loadingState" class="state-message">加载中...</div>
+    <div id="demandList"></div>
   </div>
-  <button id="newDemandBtn" class="btn-new">+ 新建需求</button>
-  <div id="errorState" class="state-error hidden"></div>
-  <div id="loadingState" class="state-message">加载中...</div>
-  <div id="demandList"></div>
 
 <script>
 (function() {
   'use strict';
   var vscode = acquireVsCodeApi();
+  var fallback = document.getElementById('fallback');
+  var app = document.getElementById('app');
   var loadingState = document.getElementById('loadingState');
   var errorState = document.getElementById('errorState');
   var demandList = document.getElementById('demandList');
@@ -184,11 +201,22 @@ body {
 
   var PHASE_LABELS = { design: '设计', testcase: '测试', development: '开发', delivery: '交付', closure: '关闭' };
   var selectedDemandId = null;
+  var isReady = false;
+
+  function switchToApp() {
+    if (fallback) fallback.style.display = 'none';
+    if (app) app.style.display = 'block';
+  }
 
   function showError(msg) {
+    switchToApp();
     if (errorState) { errorState.textContent = msg; errorState.classList.remove('hidden'); }
     if (loadingState) loadingState.classList.add('hidden');
   }
+
+  window.onerror = function(msg, url, line) {
+    showError('运行时错误: ' + msg + ' (line ' + line + ')');
+  };
 
   function esc(s) {
     if (!s) return '';
@@ -196,6 +224,7 @@ body {
   }
 
   function render(payload) {
+    switchToApp();
     if (loadingState) loadingState.classList.add('hidden');
     if (errorState) errorState.classList.add('hidden');
 
@@ -242,7 +271,6 @@ body {
       if (loadingState) loadingState.classList.remove('hidden');
       demandList.innerHTML = '';
       vscode.postMessage({ command: 'refresh' });
-      // Remove spinner after a short delay once refresh responds
       window.addEventListener('message', function stopSpin(event) {
         if (event.data && event.data.command === 'stateUpdated') {
           refreshBtn.classList.remove('spinning');
@@ -252,15 +280,14 @@ body {
     });
   }
 
-  // Initial load with a short delay so the extension host is ready
-  setTimeout(function () {
-    try {
-      if (loadingState) loadingState.classList.remove('hidden');
-      vscode.postMessage({ command: 'refresh' });
-    } catch (e) {
-      showError('无法发送刷新请求: ' + e.message);
-    }
-  }, 200);
+  // Notify extension that the webview is ready; it will then send the state.
+  try {
+    switchToApp();
+    if (loadingState) loadingState.classList.remove('hidden');
+    vscode.postMessage({ command: 'ready' });
+  } catch (e) {
+    showError('无法初始化侧边栏: ' + e.message);
+  }
 
   // Timeout: if no response after 8 seconds, prompt user to reload
   setTimeout(function () {
