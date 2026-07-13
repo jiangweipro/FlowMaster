@@ -1,0 +1,95 @@
+{
+  "name": "flowmaster-dashboard",
+  "displayName": "FlowMaster Dashboard",
+  "description": "VSCode Extension WebView UI for OpenFlow workflow management",
+  "version": "0.1.0",
+  "publisher": "flowmaster",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "icon": "media/icon-128.png",
+  "activationEvents": [
+    "onCommand:flowmaster.openDashboard",
+    "onView:flowmaster-sidebar"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "flowmaster.openDashboard",
+        "title": "FlowMaster: Open Dashboard"
+      },
+      {
+        "command": "flowmaster.refresh",
+        "title": "FlowMaster: Refresh Dashboard"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "flowmaster-sidebar-container",
+          "title": "FlowMaster",
+          "icon": "$(git-branch)"
+        }
+      ]
+    },
+    "views": {
+      "flowmaster-sidebar-container": [
+        {
+          "type": "webview",
+          "id": "flowmaster-sidebar",
+          "name": "Dashboard"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "FlowMaster",
+      "properties": {
+        "flowmaster.statePath": {
+          "type": "string",
+          "default": ".workflow/state",
+          "description": "Relative path from workspace root to the OpenFlow state directory"
+        },
+        "flowmaster.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically refresh state when dashboard opens"
+        },
+        "flowmaster.terminalReuse": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reuse existing terminal for the same demand instead of creating a new one"
+        },
+        "flowmaster.skipPermissions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run Claude Code with --dangerously-skip-permissions to avoid interactive permission prompts on long-running tasks"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -watch -p tsconfig.json",
+    "lint": "tsc --noEmit --strict",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate-icon": "node scripts/generate-icon.js",
+    "prepackage": "npm run compile",
+    "package": "npx vsce package --no-dependencies",
+    "publish": "npx vsce publish --no-dependencies"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "yaml": "^2.7.0"
+  }
+}

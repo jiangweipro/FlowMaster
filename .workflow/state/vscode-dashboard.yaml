@@ -1,0 +1,54 @@
+change: vscode-dashboard
+title: "VSCode Extension WebView UI for OpenFlow 需求管理"
+status: active
+current_phase: delivery
+
+phases:
+  design:
+    status: done
+    artifacts:
+      - openspec/changes/vscode-dashboard/proposal.md
+      - openspec/specs/vscode-dashboard/spec.md
+      - openspec/changes/vscode-dashboard/design.md
+      - .workflow/reports/vscode-dashboard/design-report.md
+    report: .workflow/reports/vscode-dashboard/design-report.md
+    gate:
+      status: passed
+      reviewer: "user"
+      reviewed_at: "2026-07-09T23:35:00+08:00"
+  testcase:
+    status: done
+    artifacts:
+      - openspec/changes/vscode-dashboard/testing-guide.md
+      - openspec/changes/vscode-dashboard/tasks.md
+      - .workflow/reports/vscode-dashboard/testcase-report.md
+    report: .workflow/reports/vscode-dashboard/testcase-report.md
+    gate:
+      status: passed
+      reviewer: "user"
+      reviewed_at: "2026-07-09T23:45:00+08:00"
+  development:
+    status: done
+    artifacts:
+      - src/extension.ts
+      - src/panel.ts
+      - src/stateReader.ts
+      - src/terminalRunner.ts
+      - src/fileOpener.ts
+      - media/style.css
+      - media/script.js
+      - tests/stateReader.test.ts
+      - package.json
+      - tsconfig.json
+      - .vscode/launch.json
+      - .workflow/reports/vscode-dashboard/code-review-report.md
+      - .workflow/reports/vscode-dashboard/at-exec-report.md
+    report: .workflow/reports/vscode-dashboard/at-exec-report.md
+    gate:
+      status: pending
+  delivery:
+    status: blocked
+    blocked_by: [development.gate]
+  closure:
+    status: blocked
+    blocked_by: [delivery.gate]
