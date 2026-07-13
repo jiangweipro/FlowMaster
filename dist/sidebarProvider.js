@@ -52,7 +52,7 @@ class FlowMasterSidebarProvider {
                 enableScripts: true,
                 localResourceRoots: [this.context.extensionUri]
             };
-            webviewView.webview.html = this.getHtml();
+            webviewView.webview.html = this.getHtml(webviewView.webview);
             webviewView.webview.onDidReceiveMessage(async (message) => {
                 try {
                     switch (message.command) {
@@ -108,13 +108,14 @@ class FlowMasterSidebarProvider {
             });
         }
     }
-    getHtml() {
+    getHtml(webview) {
+        const cspSource = webview.cspSource;
         return /* html */ `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${cspSource}; script-src 'unsafe-inline' ${cspSource};">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
