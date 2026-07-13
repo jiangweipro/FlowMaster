@@ -39,11 +39,16 @@ const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const child_process_1 = require("child_process");
+const sidebarProvider_1 = require("./sidebarProvider");
+const stateReader_1 = require("./stateReader");
 // ============================================
 // Extension Entry Point
 // ============================================
 let panel;
 let projectRoot = '';
+let selectedDemandId = null;
+let stateReader;
+let sidebarProvider;
 function activate(context) {
     console.log('[FlowMaster] Extension activating...');
     // Determine project root
@@ -56,22 +61,28 @@ function activate(context) {
         }
     }
     console.log('[FlowMaster] Project root:', projectRoot);
+    stateReader = new stateReader_1.StateReader();
+    sidebarProvider = new sidebarProvider_1.FlowMasterSidebarProvider(stateReader, context);
+    // Register sidebar view
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider(sidebarProvider_1.FlowMasterSidebarProvider.viewType, sidebarProvider));
     // Register commands
-    const cmd = vscode.commands.registerCommand('flowmaster.openDashboard', () => {
+    const openCmd = vscode.commands.registerCommand('flowmaster.openDashboard', (demandId) => {
+        if (demandId && typeof demandId === 'string')
+            selectedDemandId = demandId;
         if (panel) {
             panel.reveal();
+            sendSelectedDemand();
             return;
         }
         createPanel(context);
     });
     const refreshCmd = vscode.commands.registerCommand('flowmaster.refresh', () => {
-        if (panel) {
-            sendState();
-            return;
-        }
-        createPanel(context);
+        refreshAll();
     });
-    context.subscriptions.push(cmd, refreshCmd);
+    const newDemandCmd = vscode.commands.registerCommand('flowmaster.newDemand', () => {
+        runPropose();
+    });
+    context.subscriptions.push(openCmd, refreshCmd, newDemandCmd);
     // Status bar button
     const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBar.text = '$(project) FlowMaster';
@@ -83,9 +94,7 @@ function activate(context) {
     createPanel(context);
     // Auto-refresh every 30 seconds
     const refreshTimer = setInterval(() => {
-        if (panel) {
-            sendState();
-        }
+        refreshAll();
     }, 30000);
     context.subscriptions.push({ dispose: () => clearInterval(refreshTimer) });
     console.log('[FlowMaster] Extension activated.');
@@ -108,13 +117,14 @@ function createPanel(context) {
     panel.webview.html = getHtml();
     panel.webview.onDidReceiveMessage((msg) => handleMessage(msg), undefined, context.subscriptions);
     panel.onDidDispose(() => { panel = undefined; });
+    sendSelectedDemand();
 }
 function handleMessage(msg) {
     if (!panel)
         return;
     switch (msg.command) {
         case 'refreshState':
-            sendState();
+            sendSelectedDemand();
             break;
         case 'runPhase':
             runPhase(msg.demandId, msg.phase);
@@ -130,84 +140,31 @@ function handleMessage(msg) {
             break;
     }
 }
+function refreshAll() {
+    sidebarProvider?.refresh();
+    if (panel)
+        sendSelectedDemand();
+}
 // ============================================
 // State Reader
 // ============================================
 function getProjectRoot() {
     return projectRoot || process.cwd();
 }
-function sendState() {
+function sendSelectedDemand() {
     if (!panel)
         return;
-    try {
-        const root = getProjectRoot();
-        const stateDir = path.join(root, '.workflow', 'state');
-        const demands = [];
-        if (fs.existsSync(stateDir)) {
-            const files = fs.readdirSync(stateDir).filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
-            for (const file of files) {
-                try {
-                    const content = fs.readFileSync(path.join(stateDir, file), 'utf-8').trim();
-                    if (!content)
-                        continue;
-                    const { parse } = require('yaml');
-                    const parsed = parse(content);
-                    if (!parsed || !parsed.change)
-                        continue;
-                    const currentPhase = parsed.current_phase || 'unknown';
-                    const phases = parsed.phases || {};
-                    // Determine gate status
-                    let gateStatus = 'unknown';
-                    const curPhase = phases[currentPhase];
-                    if (curPhase) {
-                        if (curPhase.gate && curPhase.gate.status) {
-                            gateStatus = curPhase.gate.status;
-                        }
-                        else if (curPhase.blocked_by) {
-                            const blocker = Array.isArray(curPhase.blocked_by) ? curPhase.blocked_by[0] : null;
-                            if (blocker) {
-                                const blockerPhase = blocker.split('.')[0];
-                                if (phases[blockerPhase] && phases[blockerPhase].gate) {
-                                    gateStatus = phases[blockerPhase].gate.status || 'unknown';
-                                }
-                            }
-                        }
-                    }
-                    // Collect artifacts from all completed phases (document outputs only)
-                    const phaseOrder = ['design', 'testcase', 'development', 'delivery', 'closure'];
-                    const artifacts = [];
-                    for (let i = 0; i < phaseOrder.indexOf(currentPhase); i++) {
-                        const p = phases[phaseOrder[i]];
-                        if (p && p.artifacts) {
-                            p.artifacts.forEach((a) => {
-                                if (a.endsWith('.md') || a.endsWith('.yaml') || a.endsWith('.yml') || a.endsWith('.json')) {
-                                    if (!artifacts.includes(a))
-                                        artifacts.push(a);
-                                }
-                            });
-                        }
-                    }
-                    demands.push({
-                        id: parsed.change,
-                        name: parsed.change,
-                        title: parsed.title || parsed.change,
-                        phase: currentPhase,
-                        gate: gateStatus,
-                        status: parsed.status || 'unknown',
-                        artifacts: artifacts,
-                        phases: phases,
-                    });
-                }
-                catch (e) {
-                    console.warn('[FlowMaster] Failed to parse:', file, String(e));
-                }
-            }
-        }
-        panel.webview.postMessage({ command: 'stateUpdated', payload: { demands } });
+    const all = stateReader?.readAllStates() || [];
+    if (all.length === 0) {
+        panel.webview.postMessage({ command: 'stateUpdated', payload: { demand: null, noDemands: true } });
+        return;
     }
-    catch (e) {
-        panel.webview.postMessage({ command: 'stateUpdated', payload: { demands: [], error: String(e) } });
+    // If no demand selected, pick the first one
+    if (!selectedDemandId || !all.find(d => d.id === selectedDemandId)) {
+        selectedDemandId = all[0].id;
     }
+    const demand = all.find(d => d.id === selectedDemandId);
+    panel.webview.postMessage({ command: 'stateUpdated', payload: { demand: demand || all[0], noDemands: false } });
 }
 // ============================================
 // Terminal Runner
@@ -236,6 +193,14 @@ function runPhase(demandId, phase) {
         return;
     }
     terminal.sendText(`claude${skipFlag} ${command} ${demandId}`);
+}
+function runPropose() {
+    const root = getProjectRoot();
+    const terminal = vscode.window.createTerminal({ name: 'FlowMaster: New Demand' });
+    const skipFlag = getSkipPermissionsFlag();
+    terminal.show();
+    terminal.sendText(`cd "${root}"`);
+    terminal.sendText(`claude${skipFlag} /opsx:propose`);
 }
 function toggleSkipPermissions() {
     const cfg = vscode.workspace.getConfiguration('flowmaster');
@@ -318,7 +283,7 @@ function reviewGate(demandId, action) {
         }
         fs.writeFileSync(statePath, stringify(parsed, { indent: 2 }), 'utf-8');
         vscode.window.showInformationMessage(`[FlowMaster] 审核${action === 'pass' ? '通过' : '打回'}成功`);
-        sendState();
+        refreshAll();
     }
     catch (e) {
         vscode.window.showErrorMessage(`[FlowMaster] 审核失败: ${String(e)}`);
@@ -326,6 +291,7 @@ function reviewGate(demandId, action) {
 }
 // ============================================
 // WebView HTML (inlined CSS + JS, Chinese UI)
+// Main dashboard: workflow-only view for the selected demand
 // ============================================
 function getHtml() {
     return `<!DOCTYPE html>
@@ -343,8 +309,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 .btn-run{background:var(--vscode-button-background,#0078d4);color:var(--vscode-button-foreground,#fff)}
 .btn-run:hover{background:var(--vscode-button-hoverBackground,#026ec1)}
 .btn-run:disabled{opacity:.4;cursor:not-allowed}
-.btn-new{background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground);width:100%;text-align:center;padding:6px;margin-bottom:8px}
-.btn-new:hover{opacity:.85}
 .btn-icon{background:none;border:1px solid var(--vscode-panel-border);color:var(--vscode-editor-foreground);padding:4px;border-radius:4px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px}
 .btn-icon:hover{background:var(--vscode-toolbar-hoverBackground)}
 .btn-icon.active{background:var(--vscode-button-background,#0078d4);color:var(--vscode-button-foreground,#fff);border-color:var(--vscode-button-background,#0078d4)}
@@ -352,15 +316,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 .state-message{text-align:center;padding:32px;color:var(--vscode-descriptionForeground)}
 .state-message.hidden{display:none}
 .state-error{color:var(--vscode-errorForeground);background:var(--vscode-inputValidation-errorBackground);border:1px solid var(--vscode-inputValidation-errorBorder);border-radius:4px;padding:8px 12px;margin:8px 16px}
-/* Layout: sidebar + main */
-#layout{display:flex;flex:1;overflow:hidden}
-#sidebar{width:200px;min-width:180px;border-right:1px solid var(--vscode-panel-border);padding:12px;overflow-y:auto;flex-shrink:0}
-#sidebar-title{font-size:11px;font-weight:600;color:var(--vscode-descriptionForeground);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
-.demand-item{padding:8px 10px;border-radius:4px;cursor:pointer;margin-bottom:2px;font-size:12px;transition:background .15s}
-.demand-item:hover{background:var(--vscode-list-hoverBackground)}
-.demand-item.active{background:var(--vscode-list-activeSelectionBackground);color:var(--vscode-list-activeSelectionForeground)}
-.demand-item .di-name{font-weight:500}
-.demand-item .di-phase{font-size:10px;opacity:.7;margin-top:2px}
 #main{flex:1;padding:16px;overflow-y:auto}
 /* Demand header */
 .demand-header{margin-bottom:16px}
@@ -414,48 +369,29 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   </header>
   <div id="loadingState" class="state-message">加载中...</div>
   <div id="errorState" class="state-message state-error hidden"></div>
-  <div id="layout" class="hidden">
-    <div id="sidebar">
-      <div id="sidebar-title">需求列表</div>
-      <button id="newDemandBtn" class="btn btn-new">+ 新建需求</button>
-      <div id="demandList"></div>
-    </div>
-    <div id="main">
-      <div id="mainContent"></div>
-      <div id="emptyDetail" class="state-message">请从左侧选择一个需求</div>
-    </div>
+  <div id="main">
+    <div id="mainContent"></div>
+    <div id="emptyDetail" class="state-message">请从左侧 FlowMaster 侧边栏选择一个需求</div>
   </div>
 </div>
 <script>
 (function(){
   'use strict';
   var api = acquireVsCodeApi();
-  var app = document.getElementById('app');
-  var layout = document.getElementById('layout');
-  var demandList = document.getElementById('demandList');
   var mainContent = document.getElementById('mainContent');
   var emptyDetail = document.getElementById('emptyDetail');
   var loadingState = document.getElementById('loadingState');
   var errorState = document.getElementById('errorState');
   var refreshBtn = document.getElementById('refreshBtn');
   var skipPermBtn = document.getElementById('skipPermBtn');
-  var newDemandBtn = document.getElementById('newDemandBtn');
   var skipPermissionsEnabled = false;
 
   var PHASE_ORDER = ['design','testcase','development','delivery','closure'];
   var PHASE_LABELS = {design:'设计',testcase:'测试',development:'开发',delivery:'交付',closure:'关闭'};
   var PHASE_STATUS = {done:'完成',active:'进行中',blocked:'阻塞',pending:'待开始',in_progress:'进行中'};
 
-  var allDemands = [];
-  var selectedDemandId = null;
+  var currentDemand = null;
   var selectedPhase = null;
-
-  // New demand button
-  if(newDemandBtn){
-    newDemandBtn.addEventListener('click',function(){
-      api.postMessage({command:'runPhase',demandId:'new',phase:'propose'});
-    });
-  }
 
   window.addEventListener('message',function(e){
     var msg = e.data;
@@ -467,55 +403,24 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     hide(loadingState); hide(errorState);
     if(!payload){ showError('响应无效'); return; }
     if(payload.error){ showError(payload.error); }
-    var demands = payload.demands || [];
-    allDemands = demands;
 
-    show(layout);
-
-    // Sidebar: demand list
-    if(demands.length === 0){
-      demandList.innerHTML = '<div class="state-message" style="padding:16px 0">暂无需求</div>';
+    if(payload.noDemands || !payload.demand){
+      currentDemand = null;
       mainContent.innerHTML = '';
-      emptyDetail.style.display = '';
+      show(emptyDetail);
+      emptyDetail.textContent = '暂无需求，请从左侧创建新需求';
       return;
     }
 
-    demandList.innerHTML = demands.map(function(d){
-      var active = d.id === selectedDemandId ? ' active' : '';
-      if(!selectedDemandId) selectedDemandId = d.id;
-      var phaseLabel = PHASE_LABELS[d.phase]||d.phase;
-      return '<div class="demand-item'+active+'" data-id="'+esc(d.id)+'">'+
-        '<div class="di-name">'+esc(d.title||d.name)+'</div>'+
-        '<div class="di-phase">'+phaseLabel+' | '+(d.gate||'?')+'</div></div>';
-    }).join('');
-
-    // Demand list click
-    demandList.querySelectorAll('.demand-item').forEach(function(el){
-      el.addEventListener('click',function(){
-        demandList.querySelectorAll('.demand-item').forEach(function(i){ i.classList.remove('active'); });
-        this.classList.add('active');
-        selectedDemandId = this.getAttribute('data-id');
-        selectedPhase = null;
-        showDemandDetail(selectedDemandId);
-      });
-    });
-
-    // Show selected demand detail
-    if(!selectedDemandId && demands.length > 0) selectedDemandId = demands[0].id;
-    if(selectedDemandId) showDemandDetail(selectedDemandId);
+    currentDemand = payload.demand;
+    hide(emptyDetail);
+    showDemandDetail(currentDemand);
   }
 
-  function showDemandDetail(id){
-    var d = allDemands.find(function(d){ return d.id === id; });
-    if(!d){ emptyDetail.style.display = ''; mainContent.innerHTML = ''; return; }
-    emptyDetail.style.display = 'none';
-
-    var phase = d.phase||'unknown', gate = d.gate||'unknown';
-    var phases = d.phases||{};
-    var isClosure = phase === 'closure';
-
-    // Default selected phase = current phase
-    if(!selectedPhase) selectedPhase = phase;
+  function showDemandDetail(d){
+    selectedPhase = d.phase || 'unknown';
+    var phases = d.phases || {};
+    var isClosure = d.phase === 'closure';
 
     // Phase boxes
     var phaseBoxes = PHASE_ORDER.map(function(p){
@@ -523,7 +428,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       var cls = 'phase-box';
       var status = pdata.status||'pending';
       var gateStatus = (pdata.gate&&pdata.gate.status)||'';
-      if(p===phase) cls += ' active';
+      if(p===d.phase) cls += ' active';
       else if(status==='done'||status==='completed') cls += ' passed';
       else if(status==='blocked') cls += ' blocked';
       else cls += ' pending';
@@ -564,8 +469,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       selArtHtml+
       '<div class="card-footer">'+
         (isClosure ? '<span class="completed-badge">✔ 已完成</span>' : '<button class="btn btn-run" id="executeBtn">▶ 执行 '+esc(PHASE_LABELS[selectedPhase]||selectedPhase)+'</button>')+
-        (gate === 'pending' ? '<button class="btn-gate" id="gatePassBtn">✓ 审核通过</button><button class="btn-gate" id="gateRejectBtn">✗ 打回</button>' : '')+
-        '<span class="gate-label">'+(gate === 'passed' ? '✓ 已通过' : gate === 'pending' ? '⏱ 待审核' : gate === 'rejected' ? '✗ 已打回' : '审核: '+gate)+'</span>'+
+        (d.gate === 'pending' ? '<button class="btn-gate" id="gatePassBtn">✓ 审核通过</button><button class="btn-gate" id="gateRejectBtn">✗ 打回</button>' : '')+
+        '<span class="gate-label">'+(d.gate === 'passed' ? '✓ 已通过' : d.gate === 'pending' ? '⏱ 待审核' : d.gate === 'rejected' ? '✗ 已打回' : '审核: '+d.gate)+'</span>'+
       '</div>';
 
     // Phase box click: select
@@ -574,7 +479,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
         var pid = this.getAttribute('data-phase');
         if(pid === selectedPhase) return;
         selectedPhase = pid;
-        showDemandDetail(id);
+        showDemandDetail(d);
       });
     });
 
