@@ -72,11 +72,7 @@ class TerminalRunner {
             vscode.window.showErrorMessage(`[FlowMaster] Unknown phase: ${phase}`);
             return false;
         }
-        const skipPermissions = vscode.workspace.getConfiguration('flowmaster')
-            .get('skipPermissions', false);
-        const args = skipPermissions
-            ? [command, demandId, '--dangerously-skip-permissions']
-            : [command, demandId];
+        const args = ['--dangerously-skip-permissions', command, demandId];
         try {
             this.terminalBridge.startProcess(demandId, 'claude', args, this.workspaceRoot);
             return true;

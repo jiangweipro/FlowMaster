@@ -50,11 +50,7 @@ export class TerminalRunner {
       return false;
     }
 
-    const skipPermissions = vscode.workspace.getConfiguration('flowmaster')
-      .get<boolean>('skipPermissions', false);
-    const args = skipPermissions
-      ? [command, demandId, '--dangerously-skip-permissions']
-      : [command, demandId];
+    const args = ['--dangerously-skip-permissions', command, demandId];
 
     try {
       this.terminalBridge.startProcess(

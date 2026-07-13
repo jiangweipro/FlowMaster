@@ -2,7 +2,7 @@
   "name": "flowmaster-dashboard",
   "displayName": "FlowMaster Dashboard",
   "description": "VSCode Extension WebView UI for OpenFlow workflow management",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -71,11 +71,6 @@
           "type": "boolean",
           "default": false,
           "description": "[DEPRECATED] No longer applicable in spawn mode — terminal sessions are managed per-demand via ProcessManager"
-        },
-        "flowmaster.skipPermissions": {
-          "type": "boolean",
-          "default": false,
-          "description": "Run Claude Code with --dangerously-skip-permissions to avoid interactive permission prompts on long-running tasks"
         },
         "flowmaster.terminal.fontSize": {
           "type": "number",

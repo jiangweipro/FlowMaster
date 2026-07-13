@@ -152,7 +152,6 @@ function handleMessage(msg: any): void {
     case 'runPhase': runPhase(msg.demandId || msg.payload?.demandId, msg.phase || msg.payload?.phase); break;
     case 'openFile': openFile(msg.path || msg.payload?.path); break;
     case 'reviewGate': reviewGate(msg.demandId || msg.payload?.demandId, msg.action || msg.payload?.action); break;
-    case 'toggleSkipPermissions': toggleSkipPermissions(); break;
     case 'terminalInput': {
       const demandId = msg.payload?.demandId;
       const data = msg.payload?.data;
@@ -240,8 +239,8 @@ function sendSelectedDemand(): void {
 // ============================================
 
 function getSkipPermissionsFlag(): string {
-  const cfg = vscode.workspace.getConfiguration('flowmaster');
-  return cfg.get<boolean>('skipPermissions', false) ? ' --dangerously-skip-permissions' : '';
+  // Always skip interactive permission prompts in the embedded terminal
+  return ' --dangerously-skip-permissions';
 }
 
 function runPhase(demandId: string, phase: string): void {
@@ -296,18 +295,6 @@ function ensureOpenflowDesignSkill(): boolean {
     '[FlowMaster] 未检测到 openflow-design 技能，请先在 .claude/skills 或 ~/.claude/skills 中添加该技能。'
   );
   return false;
-}
-
-function toggleSkipPermissions(): void {
-  const cfg = vscode.workspace.getConfiguration('flowmaster');
-  const current = cfg.get<boolean>('skipPermissions', false);
-  cfg.update('skipPermissions', !current, true).then(
-    () => {
-      const state = !current ? '已启用' : '已关闭';
-      vscode.window.showInformationMessage(`[FlowMaster] --dangerously-skip-permissions ${state}`);
-    },
-    (err) => vscode.window.showErrorMessage(`[FlowMaster] 更新设置失败: ${String(err)}`)
-  );
 }
 
 // ============================================
@@ -459,13 +446,18 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 #divider{height:4px;background:var(--vscode-panel-border,#333);cursor:row-resize;flex-shrink:0;transition:background .15s;z-index:10}
 #divider:hover,#divider.active{background:var(--vscode-focusBorder,#007acc)}
 /* Terminal panel (lower) */
-#terminal-panel{flex:${Math.round((1 - splitRatio) * 100)} 1 0;min-height:80px;overflow:hidden;background:var(--vscode-terminal-background,#1e1e1e);position:relative}
-#terminal-container{height:100%;width:100%;padding:4px}
-#terminal-container .xterm{height:100%;padding:4px}
-#terminal-fallback{display:none;height:100%;overflow-y:auto;padding:8px 12px;font-family:var(--vscode-editor-font-family,'Consolas',monospace);font-size:var(--vscode-editor-font-size,13px);color:var(--vscode-terminal-foreground,#ccc);background:var(--vscode-terminal-background,#1e1e1e);white-space:pre-wrap;word-break:break-all}
+#terminal-panel{flex:${Math.round((1 - splitRatio) * 100)} 1 0;min-height:80px;overflow:hidden;background:var(--vscode-terminal-background,#1e1e1e);position:relative;display:flex;flex-direction:column;border-top:1px solid var(--vscode-panel-border)}
+#terminal-header{flex-shrink:0;height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:var(--vscode-titleBar-activeBackground,#2d2d30);border-bottom:1px solid var(--vscode-panel-border);font-size:11px;color:var(--vscode-titleBar-activeForeground,#cccccc)}
+#terminal-header .th-title{display:flex;align-items:center;gap:6px;font-weight:600}
+#terminal-header .th-status{font-size:10px;opacity:.7}
+#terminal-container{flex:1;min-height:0;width:100%;padding:8px;overflow:hidden}
+#terminal-container .xterm{height:100%;padding:0}
+#terminal-container .xterm-viewport{background:transparent!important}
+#terminal-fallback{display:none;flex:1;min-height:0;overflow-y:auto;padding:8px 12px;font-family:var(--vscode-editor-font-family,'Consolas',monospace);font-size:var(--vscode-editor-font-size,13px);color:var(--vscode-terminal-foreground,#ccc);background:var(--vscode-terminal-background,#1e1e1e);white-space:pre-wrap;word-break:break-all}
 #terminal-fallback.visible{display:block}
-#terminal-placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground,#858585);font-size:13px;font-family:var(--vscode-font-family)}
+#terminal-placeholder{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground,#858585);font-size:13px;font-family:var(--vscode-font-family);flex-direction:column;gap:8px}
 #terminal-placeholder.hidden{display:none}
+#terminal-placeholder svg{opacity:.5}
 .no-select{user-select:none;-webkit-user-select:none}
 /* Demand header */
 .demand-header{margin-bottom:16px}
@@ -509,9 +501,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       <h1>FlowMaster 控制台</h1>
     </div>
     <div style="display:flex;align-items:center;gap:8px">
-      <button id="skipPermBtn" class="btn-icon" title="切换 --dangerously-skip-permissions">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg>
-      </button>
       <button id="refreshBtn" class="btn-icon" title="刷新">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
       </button>
@@ -525,8 +514,17 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   </div>
   <div id="divider"></div>
   <div id="terminal-panel">
+    <div id="terminal-header">
+      <div class="th-title">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+        <span>FlowMaster 终端</span>
+      </div>
+      <div class="th-status" id="terminalStatus">就绪</div>
+    </div>
     <div id="terminal-container"></div>
-    <div id="terminal-placeholder">终端准备就绪，点击"执行"启动...</div>
+    <div id="terminal-placeholder">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+      <span>终端准备就绪，点击下方“执行”按钮启动</span>
     <div id="terminal-fallback"></div>
   </div>
 </div>
@@ -544,8 +542,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   var loadingState = document.getElementById('loadingState');
   var errorState = document.getElementById('errorState');
   var refreshBtn = document.getElementById('refreshBtn');
-  var skipPermBtn = document.getElementById('skipPermBtn');
-  var skipPermissionsEnabled = false;
+  var terminalStatus = document.getElementById('terminalStatus');
   var terminalContainer = document.getElementById('terminal-container');
   var terminalPlaceholder = document.getElementById('terminal-placeholder');
   var terminalFallback = document.getElementById('terminal-fallback');
@@ -573,7 +570,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   window.addEventListener('message',function(e){
     var msg = e.data;
     if(msg.command === 'stateUpdated'){ handleState(msg.payload); }
-    if(msg.command === 'skipPermissionsChanged'){ updateSkipButton(msg.payload.enabled); }
     if(msg.command === 'terminalOutput'){ handleTerminalOutput(msg); }
     if(msg.command === 'terminalExit'){ handleTerminalExit(msg); }
     if(msg.command === 'terminalError'){ handleTerminalError(msg); }
@@ -589,20 +585,23 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       terminalFallback.textContent += msg.data;
     }
   }
+  function handleTerminalStart(msg){
+    if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
+    if(msg.demandId) currentDemandId = msg.demandId;
+    if(terminalStatus) terminalStatus.textContent = '运行中';
+  }
   function handleTerminalExit(msg){
     var exitMsg = '\\r\\n[进程已退出，退出码: ' + msg.code + ']';
     if(xterm && xtermReady){ xterm.write(exitMsg); }
     else if(terminalFallback){ terminalFallback.textContent += exitMsg; }
     if(msg.demandId){ currentDemandId = null; }
+    if(terminalStatus) terminalStatus.textContent = '已退出';
   }
   function handleTerminalError(msg){
     var errMsg = '\\r\\n[错误: ' + msg.error + ']';
     if(xterm && xtermReady){ xterm.write('\\x1b[31m' + errMsg + '\\x1b[0m'); }
     else if(terminalFallback){ terminalFallback.textContent += errMsg; }
-  }
-  function handleTerminalStart(msg){
-    if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
-    if(msg.demandId) currentDemandId = msg.demandId;
+    if(terminalStatus) terminalStatus.textContent = '错误';
   }
 
   // --- xterm init ---
@@ -817,9 +816,12 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       execBtn.addEventListener('click',function(){
         this.disabled = true; this.textContent = '执行中...';
         currentDemandId = d.id;
-        // Clear terminal for new execution
-        if(xterm && xtermReady){ xterm.reset(); xterm.write('\\x1b[33mStarting...\\x1b[0m\\r\\n\\n'); }
-        else if(terminalFallback){ terminalFallback.textContent = ''; }
+        if(terminalStatus) terminalStatus.textContent = '启动中';
+        if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
+        // Clear terminal for new execution and show command
+        var startMsg = '\\x1b[36m[FlowMaster]\\x1b[0m 启动阶段: ' + esc(PHASE_LABELS[selectedPhase]||selectedPhase) + ' (需求: ' + esc(d.id) + ')\\r\\n';
+        if(xterm && xtermReady){ xterm.reset(); xterm.write(startMsg); }
+        else if(terminalFallback){ terminalFallback.textContent = startMsg; }
         api.postMessage({command:'runPhase',demandId:d.id,phase:selectedPhase});
         setTimeout(function(){ if(execBtn){ execBtn.disabled=false; execBtn.textContent='▶ 执行 '+esc(PHASE_LABELS[selectedPhase]||selectedPhase); }},5000);
       });
@@ -857,19 +859,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   function hide(el){ if(el) el.classList.add('hidden'); }
   function esc(s){ if(!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-  function updateSkipButton(enabled){
-    skipPermissionsEnabled = !!enabled;
-    if(skipPermBtn){
-      skipPermBtn.classList.toggle('active', skipPermissionsEnabled);
-      skipPermBtn.title = 'skip-permissions: ' + (skipPermissionsEnabled ? '已启用' : '已关闭');
-    }
-  }
-
-  if(skipPermBtn){
-    skipPermBtn.addEventListener('click',function(){
-      api.postMessage({command:'toggleSkipPermissions'});
-    });
-  }
   if(refreshBtn){ refreshBtn.addEventListener('click',function(){ hide(errorState); api.postMessage({command:'refreshState'}); }); }
 
   // Initialize
