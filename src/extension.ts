@@ -13,6 +13,7 @@ import { TerminalBridge, TerminalToWebViewMessage } from './terminalBridge';
 // ============================================
 
 let panel: vscode.WebviewPanel | undefined;
+let panelReady = false;
 let projectRoot: string = '';
 let selectedDemandId: string | null = null;
 let stateReader: StateReader | undefined;
@@ -20,6 +21,7 @@ let sidebarProvider: FlowMasterSidebarProvider | undefined;
 let processManager: ProcessManager | undefined;
 let terminalBridge: TerminalBridge | undefined;
 let contextGlobal: vscode.ExtensionContext;
+let pendingDemandSelection: string | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
   contextGlobal = context;
@@ -51,8 +53,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Register commands
     const openCmd = vscode.commands.registerCommand('flowmaster.openDashboard', (demandId?: string) => {
-      if (demandId && typeof demandId === 'string') selectedDemandId = demandId;
-      if (panel) { panel.reveal(); sendSelectedDemand(); return; }
+      if (demandId && typeof demandId === 'string') {
+        selectedDemandId = demandId;
+      }
+      if (panel) {
+        panel.reveal();
+        if (panelReady) {
+          sendSelectedDemand();
+        } else {
+          pendingDemandSelection = selectedDemandId;
+        }
+        return;
+      }
       createPanel(context);
     });
 
@@ -107,6 +119,7 @@ const PHASE_COMMAND_MAP: Record<string, string> = {
 };
 
 function createPanel(context: vscode.ExtensionContext): void {
+  panelReady = false;
   panel = vscode.window.createWebviewPanel(
     'flowmasterDashboard',
     'FlowMaster 控制台',
@@ -140,7 +153,7 @@ function createPanel(context: vscode.ExtensionContext): void {
     context.subscriptions
   );
 
-  panel.onDidDispose(() => { panel = undefined; });
+  panel.onDidDispose(() => { panel = undefined; panelReady = false; });
 
   sendSelectedDemand();
 }
@@ -148,6 +161,15 @@ function createPanel(context: vscode.ExtensionContext): void {
 function handleMessage(msg: any): void {
   if (!panel) return;
   switch (msg.command) {
+    case 'ready': {
+      panelReady = true;
+      if (pendingDemandSelection) {
+        selectedDemandId = pendingDemandSelection;
+        pendingDemandSelection = null;
+      }
+      sendSelectedDemand();
+      break;
+    }
     case 'refreshState': sendSelectedDemand(); break;
     case 'runPhase': runPhase(msg.demandId || msg.payload?.demandId, msg.phase || msg.payload?.phase); break;
     case 'openFile': openFile(msg.path || msg.payload?.path); break;
@@ -217,12 +239,18 @@ function getProjectRoot(): string {
 }
 
 function sendSelectedDemand(): void {
-  if (!panel) return;
+  if (!panel || !panelReady) return;
   const all = stateReader?.readAllStates() || [];
 
   if (all.length === 0) {
     panel.webview.postMessage({ command: 'stateUpdated', payload: { demand: null, noDemands: true } });
     return;
+  }
+
+  // If a pending selection exists, prefer it
+  if (pendingDemandSelection && all.find(d => d.id === pendingDemandSelection)) {
+    selectedDemandId = pendingDemandSelection;
+    pendingDemandSelection = null;
   }
 
   // If no demand selected, pick the first one
@@ -457,6 +485,20 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 .phase-box-gate.passed{background:var(--vscode-testing-iconPassed,#4ec9b0);color:var(--vscode-editor-background)}
 .phase-box-gate.pending{background:var(--vscode-editorWarning-foreground,#cca700);color:var(--vscode-editor-background)}
 .phase-box-gate.rejected{background:var(--vscode-editorError-foreground,#f48771);color:var(--vscode-editor-background)}
+/* Phase info */
+.phase-info{margin-bottom:16px;padding:12px;background:var(--vscode-textCodeBlock-background);border-radius:6px;border-left:3px solid var(--vscode-focusBorder)}
+.phase-info-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.phase-info-title{font-size:14px;font-weight:600}
+.phase-info-status{font-size:10px;padding:2px 8px;border-radius:10px;text-transform:uppercase}
+.phase-info-status.done{background:var(--vscode-testing-iconPassed,#4ec9b0);color:var(--vscode-editor-background)}
+.phase-info-status.in_progress,.phase-info-status.active{background:var(--vscode-focusBorder,#007fd4);color:var(--vscode-editor-background)}
+.phase-info-status.blocked{background:var(--vscode-editorError-foreground,#f48771);color:var(--vscode-editor-background)}
+.phase-info-status.pending{background:var(--vscode-descriptionForeground);color:var(--vscode-editor-background)}
+.phase-info-desc{font-size:12px;color:var(--vscode-descriptionForeground);margin-bottom:8px;line-height:1.5}
+.phase-info-cmd{margin-bottom:8px}
+.phase-info-cmd code{font-family:var(--vscode-editor-font-family,'Consolas',monospace);font-size:12px;background:var(--vscode-terminal-background);padding:4px 8px;border-radius:4px;color:var(--vscode-terminal-foreground)}
+.phase-info-report{font-size:12px;color:var(--vscode-descriptionForeground);margin-bottom:8px;line-height:1.5}
+.phase-info-gate{font-size:12px;color:var(--vscode-descriptionForeground)}
 /* Phase artifacts */
 .phase-artifacts{margin-bottom:16px;padding:8px 12px;background:var(--vscode-textCodeBlock-background);border-radius:6px;display:none}
 .phase-artifacts.visible{display:block}
@@ -528,6 +570,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   var PHASE_ORDER = ['design','testcase','development','delivery','closure'];
   var PHASE_LABELS = {design:'设计',testcase:'测试',development:'开发',delivery:'交付',closure:'关闭'};
   var PHASE_STATUS = {done:'完成',active:'进行中',blocked:'阻塞',pending:'待开始',in_progress:'进行中'};
+  var PHASE_COMMANDS = {design:'/openflow:design',testcase:'/openflow:plan',development:'/openflow:build',delivery:'/openflow:close',closure:''};
+  var PHASE_DESCRIPTIONS = {design:'创建需求设计文档，明确实现方案',testcase:'生成测试计划与测试用例',development:'根据设计进行编码实现',delivery:'交付变更并关闭需求',closure:'需求已完成，无需执行操作'};
 
   var currentDemand = null;
   var selectedPhase = null;
@@ -649,7 +693,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       displayedDemandId = d.id;
     }
     var phases = d.phases || {};
-    var isClosure = d.phase === 'closure';
+    var isClosure = selectedPhase === 'closure';
 
     var phaseBoxes = PHASE_ORDER.map(function(p){
       var pdata = phases[p]||{};
@@ -675,7 +719,23 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     var selArtifacts = selPhaseData.artifacts||[];
     var selGateStatus = (selPhaseData.gate && selPhaseData.gate.status) || 'unknown';
     var selGatePending = selGateStatus === 'pending';
+    var selPhaseStatus = selPhaseData.status || 'pending';
+    var selPhaseCmd = PHASE_COMMANDS[selectedPhase] || '';
+    var selPhaseDesc = PHASE_DESCRIPTIONS[selectedPhase] || '暂无说明';
+    var selPhaseReport = selPhaseData.report || '';
     var selArtHtml = '';
+
+    var phaseInfoHtml = '<div class="phase-info">'+
+      '<div class="phase-info-header">'+
+        '<div class="phase-info-title">'+esc(PHASE_LABELS[selectedPhase]||selectedPhase)+'</div>'+
+        '<div class="phase-info-status '+esc(selPhaseStatus)+'">'+esc(PHASE_STATUS[selPhaseStatus]||selPhaseStatus)+'</div>'+
+      '</div>'+
+      '<div class="phase-info-desc">'+esc(selPhaseDesc)+'</div>'+
+      (selPhaseCmd ? '<div class="phase-info-cmd"><code>claude '+esc(selPhaseCmd)+' '+esc(d.id)+'</code></div>' : '')+
+      (selPhaseReport ? '<div class="phase-info-report"><strong>阶段报告：</strong>'+esc(selPhaseReport)+'</div>' : '')+
+      '<div class="phase-info-gate">审核：'+(selGateStatus === 'passed' ? '✓ 已通过' : selGateStatus === 'pending' ? '⏱ 待审核' : selGateStatus === 'rejected' ? '✗ 已打回' : '无需审核')+'</div>'+
+    '</div>';
+
     if(selArtifacts.length > 0){
       selArtHtml = '<div class="phase-artifacts visible">'+
         '<div class="phase-artifacts-title">📄 '+PHASE_LABELS[selectedPhase]+' 阶段产出文档</div>'+
@@ -695,6 +755,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
         '<div class="dh-id">id: '+esc(d.id)+'</div>'+
       '</div>'+
       '<div class="phase-grid">'+phaseBoxes+'</div>'+
+      phaseInfoHtml+
       selArtHtml+
       '<div class="card-footer">'+
         (isClosure ? '<span class="completed-badge">✔ 已完成</span>' : '<button class="btn btn-run" id="executeBtn">▶ 执行 '+esc(PHASE_LABELS[selectedPhase]||selectedPhase)+'</button>')+
@@ -765,7 +826,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   // Initialize
   initSplitter();
   initTerminal();
-  api.postMessage({command:'refreshState'});
+  // Notify extension that the panel webview is ready to receive messages.
+  api.postMessage({command:'ready'});
   setTimeout(function(){ if(loadingState&&!loadingState.classList.contains('hidden')){ showError('无法连接扩展进程'); }},8000);
 })();
 </script>

@@ -2,7 +2,7 @@
   "name": "flowmaster-dashboard",
   "displayName": "FlowMaster Dashboard",
   "description": "VSCode Extension WebView UI for OpenFlow workflow management",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "license": "MIT",
   "repository": {
     "type": "git",
