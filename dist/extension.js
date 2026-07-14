@@ -163,7 +163,7 @@ function handleMessage(msg) {
             openFile(msg.path || msg.payload?.path);
             break;
         case 'reviewGate':
-            reviewGate(msg.demandId || msg.payload?.demandId, msg.action || msg.payload?.action);
+            reviewGate(msg.demandId || msg.payload?.demandId, msg.phase || msg.payload?.phase, msg.action || msg.payload?.action);
             break;
         case 'terminalInput': {
             const demandId = msg.payload?.demandId;
@@ -314,7 +314,7 @@ function openFile(filePath) {
 // ============================================
 // Gate Review - Direct state file update
 // ============================================
-function reviewGate(demandId, action) {
+function reviewGate(demandId, phase, action) {
     const root = getProjectRoot();
     const statePath = path.join(root, '.workflow', 'state', demandId + '.yaml');
     if (!fs.existsSync(statePath)) {
@@ -329,9 +329,10 @@ function reviewGate(demandId, action) {
             vscode.window.showErrorMessage('[FlowMaster] 状态文件格式无效');
             return;
         }
-        // Find the phase that has a pending gate
+        // Determine the target phase to review: prefer the one selected in the UI,
+        // fall back to the current phase if not provided or invalid.
         const phaseOrder = ['design', 'testcase', 'development', 'delivery', 'closure'];
-        let targetPhase = parsed.current_phase;
+        let targetPhase = phase && parsed.phases[phase] ? phase : parsed.current_phase;
         const curPhaseData = parsed.phases[targetPhase];
         if (curPhaseData && curPhaseData.blocked_by) {
             const blocker = Array.isArray(curPhaseData.blocked_by) ? curPhaseData.blocked_by[0] : '';
@@ -342,19 +343,19 @@ function reviewGate(demandId, action) {
                 }
             }
         }
-        const phase = parsed.phases[targetPhase];
-        if (!phase) {
+        const phaseObj = parsed.phases[targetPhase];
+        if (!phaseObj) {
             vscode.window.showErrorMessage(`[FlowMaster] 找不到阶段: ${targetPhase}`);
             return;
         }
-        if (!phase.gate)
-            phase.gate = {};
-        phase.gate.status = action === 'pass' ? 'passed' : 'rejected';
-        phase.gate.reviewer = 'user';
-        phase.gate.reviewed_at = new Date().toISOString();
+        if (!phaseObj.gate)
+            phaseObj.gate = {};
+        phaseObj.gate.status = action === 'pass' ? 'passed' : 'rejected';
+        phaseObj.gate.reviewer = 'user';
+        phaseObj.gate.reviewed_at = new Date().toISOString();
         if (action === 'pass') {
             const idx = phaseOrder.indexOf(targetPhase);
-            phase.status = 'done';
+            phaseObj.status = 'done';
             if (idx >= 0 && idx < phaseOrder.length - 1) {
                 const nextPhase = phaseOrder[idx + 1];
                 if (parsed.phases[nextPhase]) {
@@ -365,7 +366,7 @@ function reviewGate(demandId, action) {
             }
         }
         else {
-            phase.status = 'revision_needed';
+            phaseObj.status = 'revision_needed';
         }
         fs.writeFileSync(statePath, stringify(parsed, { indent: 2 }), 'utf-8');
         vscode.window.showInformationMessage(`[FlowMaster] 审核${action === 'pass' ? '通过' : '打回'}成功`);
@@ -760,6 +761,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 
     var selPhaseData = phases[selectedPhase]||{};
     var selArtifacts = selPhaseData.artifacts||[];
+    var selGateStatus = (selPhaseData.gate && selPhaseData.gate.status) || 'unknown';
+    var selGatePending = selGateStatus === 'pending';
     var selArtHtml = '';
     if(selArtifacts.length > 0){
       selArtHtml = '<div class="phase-artifacts visible">'+
@@ -783,8 +786,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       selArtHtml+
       '<div class="card-footer">'+
         (isClosure ? '<span class="completed-badge">✔ 已完成</span>' : '<button class="btn btn-run" id="executeBtn">▶ 执行 '+esc(PHASE_LABELS[selectedPhase]||selectedPhase)+'</button>')+
-        (d.gate === 'pending' ? '<button class="btn-gate" id="gatePassBtn">✓ 审核通过</button><button class="btn-gate" id="gateRejectBtn">✗ 打回</button>' : '')+
-        '<span class="gate-label">'+(d.gate === 'passed' ? '✓ 已通过' : d.gate === 'pending' ? '⏱ 待审核' : d.gate === 'rejected' ? '✗ 已打回' : '审核: '+d.gate)+'</span>'+
+        (selGatePending ? '<button class="btn-gate" id="gatePassBtn">✓ 审核通过</button><button class="btn-gate" id="gateRejectBtn">✗ 打回</button>' : '')+
+        '<span class="gate-label">'+(selGateStatus === 'passed' ? '✓ 已通过' : selGateStatus === 'pending' ? '⏱ 待审核' : selGateStatus === 'rejected' ? '✗ 已打回' : '审核: '+selGateStatus)+'</span>'+
       '</div>';
 
     // Phase box click
@@ -820,14 +823,14 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     if(gatePassBtn){
       gatePassBtn.addEventListener('click',function(){
         this.disabled=true; this.textContent='提交中...';
-        api.postMessage({command:'reviewGate',demandId:d.id,action:'pass'});
+        api.postMessage({command:'reviewGate',demandId:d.id,phase:selectedPhase,action:'pass'});
         setTimeout(function(){ if(gatePassBtn){ gatePassBtn.disabled=false; gatePassBtn.textContent='✓ 审核通过'; }},5000);
       });
     }
     if(gateRejectBtn){
       gateRejectBtn.addEventListener('click',function(){
         this.disabled=true; this.textContent='提交中...';
-        api.postMessage({command:'reviewGate',demandId:d.id,action:'reject'});
+        api.postMessage({command:'reviewGate',demandId:d.id,phase:selectedPhase,action:'reject'});
         setTimeout(function(){ if(gateRejectBtn){ gateRejectBtn.disabled=false; gateRejectBtn.textContent='✗ 打回'; }},5000);
       });
     }
