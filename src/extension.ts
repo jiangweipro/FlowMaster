@@ -395,25 +395,8 @@ function reviewGate(demandId: string, phase: string, action: string): void {
 // ============================================
 
 function getHtml(webview: vscode.Webview, context: vscode.ExtensionContext): string {
-  // Get xterm.js URIs
-  const xtermCssUri = webview.asWebviewUri(
-    vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm', 'css', 'xterm.css'))
-  );
-  const xtermJsUri = webview.asWebviewUri(
-    vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm', 'lib', 'xterm.js'))
-  );
-  const fitAddonJsUri = webview.asWebviewUri(
-    vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm-addon-fit', 'lib', 'xterm-addon-fit.js'))
-  );
-  const webLinksAddonJsUri = webview.asWebviewUri(
-    vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm-addon-web-links', 'lib', 'xterm-addon-web-links.js'))
-  );
-
-  // Read configuration for terminal defaults
+  // Read configuration for panel split ratio
   const cfg = vscode.workspace.getConfiguration('flowmaster');
-  const terminalFontSize = cfg.get<number>('terminal.fontSize', 14);
-  const terminalFontFamily = cfg.get<string>('terminal.fontFamily', 'Consolas, monospace');
-  const terminalScrollback = cfg.get<number>('terminal.scrollback', 1000);
   const splitRatio = cfg.get<number>('terminal.splitRatio', 0.6);
 
   return `<!DOCTYPE html>
@@ -422,7 +405,6 @@ function getHtml(webview: vscode.Webview, context: vscode.ExtensionContext): str
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource}; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'unsafe-inline' ${webview.cspSource};">
-<link rel="stylesheet" href="${xtermCssUri}">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
@@ -451,11 +433,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 #terminal-header{flex-shrink:0;height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:var(--vscode-titleBar-activeBackground,#2d2d30);border-bottom:1px solid var(--vscode-panel-border);font-size:11px;color:var(--vscode-titleBar-activeForeground,#cccccc)}
 #terminal-header .th-title{display:flex;align-items:center;gap:6px;font-weight:600}
 #terminal-header .th-status{font-size:10px;opacity:.7}
-#terminal-container{flex:1;min-height:0;width:100%;padding:8px;overflow:hidden}
-#terminal-container .xterm{height:100%;padding:0}
-#terminal-container .xterm-viewport{background:transparent!important}
-#terminal-fallback{display:none;flex:1;min-height:0;overflow-y:auto;padding:8px 12px;font-family:var(--vscode-editor-font-family,'Consolas',monospace);font-size:var(--vscode-editor-font-size,13px);color:var(--vscode-terminal-foreground,#ccc);background:var(--vscode-terminal-background,#1e1e1e);white-space:pre-wrap;word-break:break-all}
-#terminal-fallback.visible{display:block}
+#terminal-container{flex:1;min-height:0;width:100%;padding:8px 12px;overflow-y:auto;background:var(--vscode-terminal-background,#1e1e1e);color:var(--vscode-terminal-foreground,#ccc)}
+#terminal-output{margin:0;font-family:var(--vscode-editor-font-family,'Consolas','Courier New',monospace);font-size:var(--vscode-editor-font-size,13px);line-height:1.5;white-space:pre-wrap;word-break:break-all}
 #terminal-placeholder{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground,#858585);font-size:13px;font-family:var(--vscode-font-family);flex-direction:column;gap:8px}
 #terminal-placeholder.hidden{display:none}
 #terminal-placeholder svg{opacity:.5}
@@ -522,18 +501,13 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       </div>
       <div class="th-status" id="terminalStatus">就绪</div>
     </div>
-    <div id="terminal-container"></div>
+    <div id="terminal-container"><pre id="terminal-output"></pre></div>
     <div id="terminal-placeholder">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
       <span>终端准备就绪，点击下方“执行”按钮启动</span>
-    <div id="terminal-fallback"></div>
+    </div>
   </div>
 </div>
-<!-- xterm.js configuration -->
-<meta id="xterm-config" data-config='{"fontSize":${terminalFontSize},"fontFamily":"${terminalFontFamily}","scrollback":${terminalScrollback}}'>
-<script src="${xtermJsUri}"></script>
-<script src="${fitAddonJsUri}"></script>
-<script src="${webLinksAddonJsUri}"></script>
 <script>
 (function(){
   'use strict';
@@ -545,8 +519,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   var refreshBtn = document.getElementById('refreshBtn');
   var terminalStatus = document.getElementById('terminalStatus');
   var terminalContainer = document.getElementById('terminal-container');
+  var terminalOutput = document.getElementById('terminal-output');
   var terminalPlaceholder = document.getElementById('terminal-placeholder');
-  var terminalFallback = document.getElementById('terminal-fallback');
   var divider = document.getElementById('divider');
   var dashboardPanel = document.getElementById('dashboard-panel');
   var terminalPanel = document.getElementById('terminal-panel');
@@ -559,15 +533,11 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   var selectedPhase = null;
   var displayedDemandId = null;
   var currentDemandId = null;
-  var xterm = null;
-  var fitAddon = null;
-  var webLinksAddon = null;
   var isDragging = false;
   var dragStartY = 0;
   var dragStartFlex = 0.6;
   var minDashboardHeight = 100;
   var minTerminalHeight = 80;
-  var xtermReady = false;
 
   window.addEventListener('message',function(e){
     var msg = e.data;
@@ -579,13 +549,13 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   });
 
   // --- Terminal handlers ---
+  function appendToTerminal(text){
+    if(!terminalOutput || !terminalContainer) return;
+    terminalOutput.textContent += text;
+    terminalContainer.scrollTop = terminalContainer.scrollHeight;
+  }
   function handleTerminalOutput(msg){
-    if(xterm && xtermReady){
-      xterm.write(msg.data);
-    } else if(terminalFallback){
-      terminalFallback.classList.add('visible');
-      terminalFallback.textContent += msg.data;
-    }
+    appendToTerminal(msg.data);
   }
   function handleTerminalStart(msg){
     if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
@@ -593,106 +563,24 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     if(terminalStatus) terminalStatus.textContent = '运行中';
   }
   function handleTerminalExit(msg){
-    var exitMsg = '\\r\\n[进程已退出，退出码: ' + msg.code + ']';
-    if(xterm && xtermReady){ xterm.write(exitMsg); }
-    else if(terminalFallback){ terminalFallback.textContent += exitMsg; }
+    appendToTerminal('\r\n[进程已退出，退出码: ' + msg.code + ']');
     if(msg.demandId){ currentDemandId = null; }
     if(terminalStatus) terminalStatus.textContent = '已退出';
   }
   function handleTerminalError(msg){
-    var errMsg = '\\r\\n[错误: ' + msg.error + ']';
-    if(xterm && xtermReady){ xterm.write('\\x1b[31m' + errMsg + '\\x1b[0m'); }
-    else if(terminalFallback){ terminalFallback.textContent += errMsg; }
+    appendToTerminal('\r\n[错误: ' + msg.error + ']');
     if(terminalStatus) terminalStatus.textContent = '错误';
   }
 
-  // --- xterm init ---
+  // --- Terminal init (plain text) ---
   function initTerminal(){
-    if(!terminalContainer) return;
-    if(typeof Terminal === 'undefined'){
-      if(terminalFallback){ terminalFallback.classList.add('visible'); terminalFallback.textContent = '[xterm.js 未加载，使用纯文本输出]\\r\\n'; }
-      if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
-      return;
-    }
-    try {
-      var configMeta = document.getElementById('xterm-config');
-      var config = configMeta ? JSON.parse(configMeta.getAttribute('data-config')||'{}') : {};
-      var bg = getComputedStyle(document.documentElement).getPropertyValue('--vscode-terminal-background').trim()||'#1e1e1e';
-      var fg = getComputedStyle(document.documentElement).getPropertyValue('--vscode-terminal-foreground').trim()||'#cccccc';
-      var cursor = getComputedStyle(document.documentElement).getPropertyValue('--vscode-terminalCursor-foreground').trim()||fg;
-      var selBg = getComputedStyle(document.documentElement).getPropertyValue('--vscode-terminal-selectionBackground').trim()||'#264f78';
-
-      function vscColor(varName, fallback){
-        var v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
-        return v || fallback;
-      }
-
-      xterm = new Terminal({
-        fontSize: config.fontSize||14,
-        fontFamily: config.fontFamily||"Consolas, 'Courier New', monospace",
-        scrollback: config.scrollback||1000,
-        theme: {
-          background: bg, foreground: fg, cursor: cursor, selectionBackground: selBg,
-          black: vscColor('--vscode-terminal-ansiBlack','#000000'),
-          red: vscColor('--vscode-terminal-ansiRed','#cd3131'),
-          green: vscColor('--vscode-terminal-ansiGreen','#0dbc79'),
-          yellow: vscColor('--vscode-terminal-ansiYellow','#e5e510'),
-          blue: vscColor('--vscode-terminal-ansiBlue','#2472c8'),
-          magenta: vscColor('--vscode-terminal-ansiMagenta','#bc3fbc'),
-          cyan: vscColor('--vscode-terminal-ansiCyan','#11a8cd'),
-          white: vscColor('--vscode-terminal-ansiWhite','#e5e5e5'),
-          brightBlack: vscColor('--vscode-terminal-ansiBrightBlack','#666666'),
-          brightRed: vscColor('--vscode-terminal-ansiBrightRed','#f14c4c'),
-          brightGreen: vscColor('--vscode-terminal-ansiBrightGreen','#23d18b'),
-          brightYellow: vscColor('--vscode-terminal-ansiBrightYellow','#f5f543'),
-          brightBlue: vscColor('--vscode-terminal-ansiBrightBlue','#3b8eea'),
-          brightMagenta: vscColor('--vscode-terminal-ansiBrightMagenta','#d670d6'),
-          brightCyan: vscColor('--vscode-terminal-ansiBrightCyan','#29b8db'),
-          brightWhite: vscColor('--vscode-terminal-ansiBrightWhite','#e5e5e5')
-        },
-        allowTransparency: true, cursorBlink: true, cursorStyle: 'block'
-      });
-
-      if(typeof FitAddon !== 'undefined'){
-        fitAddon = new FitAddon();
-        xterm.loadAddon(fitAddon);
-      }
-      if(typeof WebLinksAddon !== 'undefined'){
-        webLinksAddon = new WebLinksAddon();
-        xterm.loadAddon(webLinksAddon);
-      }
-
-      xterm.open(terminalContainer);
-      if(fitAddon){
-        setTimeout(function(){ try{ fitAddon.fit(); }catch(e){} },100);
-      }
-      xtermReady = true;
-      if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
-      xterm.write('\\x1b[33mFlowMaster 终端就绪\\x1b[0m\\r\\n点击"执行"按钮启动命令\\r\\n\\n');
-
-      xterm.onData(function(data){
-        if(currentDemandId){
-          try{ api.postMessage({command:'terminalInput',payload:{demandId:currentDemandId,data:data}}); }catch(e){}
-        }
-      });
-
-      // Re-fit on resize
-      window.addEventListener('resize', function(){ fitTerminal(); });
-    } catch(e){
-      if(terminalFallback){ terminalFallback.classList.add('visible'); terminalFallback.textContent = '[xterm 初始化失败: ' + e.message + ']\\r\\n'; }
-      if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
+    if(terminalPlaceholder){
+      terminalPlaceholder.classList.remove('hidden');
     }
   }
 
   function fitTerminal(){
-    if(fitAddon && xterm && xtermReady){
-      try{
-        fitAddon.fit();
-        if(currentDemandId){
-          api.postMessage({command:'terminalResize',payload:{demandId:currentDemandId,cols:xterm.cols,rows:xterm.rows}});
-        }
-      }catch(e){}
-    }
+    // No-op for plain text terminal; scroll area resizes automatically
   }
 
   // --- Splitter drag ---
@@ -833,9 +721,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
         if(terminalStatus) terminalStatus.textContent = '启动中';
         if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
         // Clear terminal for new execution and show command
-        var startMsg = '\\x1b[36m[FlowMaster]\\x1b[0m 启动阶段: ' + esc(PHASE_LABELS[selectedPhase]||selectedPhase) + ' (需求: ' + esc(d.id) + ')\\r\\n';
-        if(xterm && xtermReady){ xterm.reset(); xterm.write(startMsg); }
-        else if(terminalFallback){ terminalFallback.textContent = startMsg; }
+        if(terminalOutput) terminalOutput.textContent = '';
+        appendToTerminal('[FlowMaster] 启动阶段: ' + esc(PHASE_LABELS[selectedPhase]||selectedPhase) + ' (需求: ' + esc(d.id) + ')\n');
         api.postMessage({command:'runPhase',demandId:d.id,phase:selectedPhase});
         setTimeout(function(){ if(execBtn){ execBtn.disabled=false; execBtn.textContent='▶ 执行 '+esc(PHASE_LABELS[selectedPhase]||selectedPhase); }},5000);
       });
