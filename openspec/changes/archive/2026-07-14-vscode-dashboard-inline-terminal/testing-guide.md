@@ -396,12 +396,12 @@
 | **预期结果** | 上半和下半各占 50% |
 | **类型** | Manual |
 
-#### TC-CONFIG-005: defaultShell 配置生效
+#### TC-CONFIG-005: 跨平台 Shell 兼容性
 | 字段 | 值 |
 |------|-----|
-| **前置条件** | 设置 `flowmaster.terminal.defaultShell: "powershell.exe"`；Windows 环境 |
+| **前置条件** | Windows 环境 |
 | **测试步骤** | 1. 点击 Run 按钮<br>2. 检查 spawn 参数 |
-| **预期结果** | `spawn` 调用包含 `shell: "powershell.exe"` |
+| **预期结果** | `spawn` 调用包含 `shell: true`（Windows 上）或 `shell: false`（Unix 上） |
 | **类型** | IT |
 
 #### TC-CONFIG-006: 配置缺失时使用默认值

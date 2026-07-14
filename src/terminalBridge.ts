@@ -150,9 +150,17 @@ export class TerminalBridge {
     args: string[],
     cwd?: string
   ): void {
+    const cwdLabel = cwd || process.cwd();
+    const cmdLine = [command, ...args].join(' ');
     this.processManager.spawnProcess(demandId, command, args, cwd);
     this.attach(demandId);
+    // Flush any output that arrived before attach (e.g. immediate stderr from cmd.exe)
+    const buffered = this.processManager.getBuffer(demandId);
+    if (buffered) {
+      this.emit({ command: 'terminalOutput', demandId, data: buffered });
+    }
     this.emit({ command: 'terminalStart', demandId, phase: args[0] || '' });
+    this.emit({ command: 'terminalOutput', demandId, data: `\x1b[36m[FlowMaster]\x1b[0m Working directory: ${cwdLabel}\r\n\x1b[36m[FlowMaster]\x1b[0m $ ${cmdLine}\r\n` });
   }
 
   /**

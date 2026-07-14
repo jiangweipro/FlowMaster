@@ -142,9 +142,17 @@ npm install xterm@4.19.0 xterm-addon-fit@0.7.0 xterm-addon-web-links@0.8.0
 - 如果目标需求有活跃进程，重新创建 xterm 实例并绑定到该进程的 stdout/stderr
 - 如果目标需求无活跃进程，显示空白终端（或"点击 Run 启动"占位）
 
-### D5: 依赖管理
+### D5: 依赖与配置管理
 
 **决策**：xterm.js 及其插件通过 npm 安装，编译时产出到 `dist/`，WebView 运行时通过 `localResourceRoots` 加载。
+
+**配置项**：注册以下 VSCode 配置项（均在 `flowmaster.terminal.*` 命名空间下）：
+- `fontSize`（number, 默认 14）— 终端字号
+- `fontFamily`（string, 默认 `"Consolas, monospace"`）— 终端字体
+- `scrollback`（number, 默认 1000）— 滚动缓冲行数
+- `splitRatio`（number, 默认 0.6）— 分栏比例
+
+> `defaultShell` 配置项在设计中提出但未实现——当前实现使用 `shell: process.platform === 'win32'` 自动处理跨平台兼容性，不提供用户可配置的 shell 覆盖。
 
 **理由**：
 - xterm.js 是纯 JS 库，无需原生模块，可在 WebView 中直接加载
@@ -213,15 +221,15 @@ npm install xterm@4.19.0 xterm-addon-fit@0.7.0 xterm-addon-web-links@0.8.0
 |------|------|
 | `src/processManager.ts` | 管理 `child_process.spawn` 生命周期，维护 demandId -> ChildProcess 映射 |
 | `src/terminalBridge.ts` | 桥接 ProcessManager 和 WebView 消息通道，转换 stdio 流为 postMessage |
-| `src/xtermManager.ts` | WebView 内 xterm.js 实例管理（创建、销毁、resize、绑定） |
-| `media/xterm.js` | 从 node_modules 中拷贝或通过 vendor 方式引入 xterm.js 核心库 |
-| `media/xterm.css` | xterm.js 样式文件 |
+| `src/terminalRunner.ts` | 重构为调用 ProcessManager，保持 `runPhase(demandId, phase)` 接口不变 |
+
+> **注**：xterm.js 核心库（`xterm`、`xterm-addon-fit`、`xterm-addon-web-links`）通过 npm 安装，在 `extension.ts` 的 `getHtml()` 中通过 `webview.asWebviewUri()` 从 `node_modules` 直接加载到 WebView，无需独立模块文件。`media/xterm.js` 和 `media/xterm.css` 由 npm 包提供。`media/script.js` 和 `media/style.css` 中的内联终端代码承担了 xterm 实例管理的职责（原设计中的 `xtermManager.ts` 功能）。
 
 #### 修改模块
 
 | 文件 | 变更内容 |
 |------|----------|
-| `src/extension.ts` | 移除 `createTerminal` 相关代码，改用 ProcessManager；更新消息处理逻辑 |
+| `src/extension.ts` | 移除 `createTerminal` 相关代码，改用 ProcessManager；更新消息处理逻辑；`getHtml()` 中内联 WebView 分栏布局和终端渲染代码 |
 | `src/terminalRunner.ts` | 重构为调用 ProcessManager，保持 `runPhase(demandId, phase)` 接口不变 |
 | `media/script.js` | 添加 xterm.js 初始化、分栏布局、终端消息处理逻辑 |
 | `media/style.css` | 添加分栏布局样式、xterm 容器样式、拖拽分割线样式 |
@@ -235,6 +243,7 @@ npm install xterm@4.19.0 xterm-addon-fit@0.7.0 xterm-addon-web-links@0.8.0
 | `src/fileOpener.ts` | 文件打开逻辑不变 |
 | `src/sidebarProvider.ts` | 侧边栏逻辑不变 |
 | `tsconfig.json` | 编译配置不变 |
+| `src/panel.ts` | 未使用，WebView 管理逻辑已合并到 `extension.ts` |
 
 ### 消息协议（postMessage）
 
@@ -399,8 +408,8 @@ npm install xterm@4.19.0 xterm-addon-fit@0.7.0 xterm-addon-web-links@0.8.0
 3. **Windows PTY 支持**：`child_process.spawn` 在 Windows 上是否需要进行 PTY 模拟 (`winpty` / `conpty`)? 目前 `claude` 命令在 Windows 上通过 `shell: true` 运行，可能需要进一步测试。
 4. **`claude` 命令路径**：`claude` 在用户 PATH 中，但 Extension Host 的环境变量可能不同于用户终端。是否需要检测 `claude` 路径？
 5. **CSP 策略**：xterm.js 的字体和样式可能触发 CSP 限制。需要测试 VSCode WebView 的 CSP 与 xterm.js 的兼容性。
-6. **`flowmaster.terminalReuse` 配置**：该配置在 spawn 模式下不再适用。应标记废弃，还是保留作为"进程复用"的语义？
-7. **`panel.ts` 和 `extension.ts` 的关系**：当前两者都有 WebView 管理逻辑，存在重复。重构时是否合并？
+6. **`flowmaster.terminalReuse` 配置**：该配置在 spawn 模式下不再适用。已在 `package.json` 中标记为 `[DEPRECATED]`，说明改为 "terminal sessions are managed per-demand via ProcessManager"。
+7. **`panel.ts` 和 `extension.ts` 的关系**：当前两者都有 WebView 管理逻辑，存在重复。实际实现中 WebView 管理逻辑已合并到 `extension.ts` 的 `getHtml()` 方法中，`panel.ts` 不再使用。
 
 ---
 

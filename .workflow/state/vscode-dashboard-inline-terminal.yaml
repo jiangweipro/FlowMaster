@@ -1,7 +1,7 @@
 change: vscode-dashboard-inline-terminal
 title: "VSCode Dashboard 内嵌终端（xterm.js）分栏方案"
-status: active
-current_phase: delivery
+status: archived
+current_phase: closure
 
 phases:
   design:
@@ -57,4 +57,5 @@ phases:
       reviewed_at: "2026-07-13T18:15:00+08:00"
       review_notes: "交付测试通过，审核通过"
   closure:
-    status: pending
+    status: done
+    archived_at: "2026-07-14T19:00:00+08:00"

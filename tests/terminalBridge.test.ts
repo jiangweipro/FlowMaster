@@ -49,7 +49,7 @@ describe('TerminalBridge', () => {
     mockProc.stdout.emit('data', Buffer.from('Hello World\n'));
 
     expect(messages.length).toBeGreaterThan(0);
-    const outputMsg = messages.find(m => m.command === 'terminalOutput');
+    const outputMsg = messages.find(m => m.command === 'terminalOutput' && m.data.includes('Hello World'));
     expect(outputMsg).toBeDefined();
     if (outputMsg && outputMsg.command === 'terminalOutput') {
       expect(outputMsg.demandId).toBe('change-1');
@@ -62,7 +62,7 @@ describe('TerminalBridge', () => {
     bridge.startProcess('change-1', 'echo', ['hello']);
     mockProc.stderr.emit('data', Buffer.from('Error: something\n'));
 
-    const outputMsg = messages.find(m => m.command === 'terminalOutput');
+    const outputMsg = messages.find(m => m.command === 'terminalOutput' && m.data.includes('Error: something'));
     expect(outputMsg).toBeDefined();
     if (outputMsg && outputMsg.command === 'terminalOutput') {
       expect(outputMsg.demandId).toBe('change-1');

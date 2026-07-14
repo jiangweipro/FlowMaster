@@ -59,8 +59,7 @@ The extension SHALL register the following VSCode configuration items under the 
 |---|---|---|---|
 | `flowmaster.terminal.fontSize` | `number` | `14` | Font size for the inline terminal (px) |
 | `flowmaster.terminal.scrollback` | `number` | `1000` | Maximum number of lines to keep in the terminal scrollback buffer |
-| `flowmaster.terminal.fontFamily` | `string` | `"Consolas, 'Courier New', monospace"` | Font family for the inline terminal |
-| `flowmaster.terminal.defaultShell` | `string` | `""` | Shell to use for the child process (empty string uses system default) |
+| `flowmaster.terminal.fontFamily` | `string` | `"Consolas, monospace"` | Font family for the inline terminal |
 | `flowmaster.terminal.splitRatio` | `number` | `0.6` | Default split ratio (0.0 = all cards, 1.0 = all terminal) |
 
 ### REQ-11: Terminal Session Map
@@ -336,9 +335,16 @@ When the user switches between demand cards, the Extension Host SHALL NOT discar
 **AND** the WebView SHALL display the error in red text  
 **AND** the card's "Run" button SHALL be re-enabled
 
-### SCN-REQ-25: Configuration — Default Shell Override
+### SCN-REQ-25: Cross-Platform Shell Compatibility
 
-**GIVEN** the user has set `flowmaster.terminal.defaultShell` to `"powershell.exe"`  
+**GIVEN** the user is on Windows  
 **WHEN** the user clicks "Run" on a demand card  
-**THEN** the Extension Host SHALL spawn the child process with `shell: "powershell.exe"`  
-**AND** the command execution SHALL succeed within the PowerShell environment
+**THEN** the Extension Host SHALL spawn the child process with `shell: true`  
+**AND** the command execution SHALL succeed through the Windows command processor (cmd.exe)  
+
+**GIVEN** the user is on Linux or macOS  
+**WHEN** the user clicks "Run" on a demand card  
+**THEN** the Extension Host SHALL spawn the child process without shell wrapping  
+**AND** the command execution SHALL succeed through the system's default shell  
+
+> **Note**: The `flowmaster.terminal.defaultShell` configuration item was proposed during design but not implemented. Cross-platform shell compatibility is handled automatically by `shell: process.platform === 'win32'`.
