@@ -116,7 +116,52 @@ const PHASE_COMMAND_MAP: Record<string, string> = {
   testcase: '/openflow:plan',
   development: '/openflow:build',
   delivery: '/openflow:close',
+  fix: '/openflow:fix',
+  retest: '/openflow:retest',
 };
+
+// Action label shown in the end-of-phase banner (command-friendly, not the Chinese phase label).
+const ACTION_LABELS: Record<string, string> = {
+  design: 'Design',
+  testcase: 'Plan',
+  development: 'Build',
+  delivery: 'Close',
+  fix: 'Fix',
+  retest: 'Retest',
+};
+
+// Context-aware next-step suggestions shown after each phase command exits.
+// build → fix / retest / close ; fix → retest / close ; retest → fix / close
+const NEXT_STEPS: Record<string, { phase: string; desc: string }[]> = {
+  development: [
+    { phase: 'fix', desc: '修复失败用例' },
+    { phase: 'retest', desc: '回归重测' },
+    { phase: 'delivery', desc: '交付归档' },
+  ],
+  fix: [
+    { phase: 'retest', desc: '回归重测' },
+    { phase: 'delivery', desc: '交付归档' },
+  ],
+  retest: [
+    { phase: 'fix', desc: '修复回归用例' },
+    { phase: 'delivery', desc: '交付归档' },
+  ],
+  design: [{ phase: 'testcase', desc: '生成测试用例与任务' }],
+  testcase: [{ phase: 'development', desc: '编码实现' }],
+};
+
+// Tracks which phase command is currently running per demand, so that on
+// terminalExit the extension can emit a phaseComplete message with next steps.
+const runningPhase: Map<string, string> = new Map();
+
+function buildNextSteps(phase: string) {
+  return (NEXT_STEPS[phase] || []).map(s => ({
+    phase: s.phase,
+    label: ACTION_LABELS[s.phase] || s.phase,
+    desc: s.desc,
+    cmd: PHASE_COMMAND_MAP[s.phase] || '',
+  }));
+}
 
 function createPanel(context: vscode.ExtensionContext): void {
   panelReady = false;
@@ -141,9 +186,24 @@ function createPanel(context: vscode.ExtensionContext): void {
   // Wire up terminal bridge message callback
   if (terminalBridge) {
     terminalBridge.setMessageCallback((msg: TerminalToWebViewMessage) => {
-      if (panel) {
-        panel.webview.postMessage(msg);
+      if (!panel) return;
+      // On process exit, emit a phaseComplete message carrying the phase that
+      // just ran and its context-aware next-step suggestions (build→fix/retest/close, etc.).
+      if (msg.command === 'terminalExit') {
+        const phase = runningPhase.get(msg.demandId);
+        if (phase) {
+          panel.webview.postMessage({
+            command: 'phaseComplete',
+            demandId: msg.demandId,
+            phase,
+            phaseLabel: ACTION_LABELS[phase] || phase,
+            code: msg.code,
+            nextSteps: buildNextSteps(phase),
+          });
+          runningPhase.delete(msg.demandId);
+        }
       }
+      panel.webview.postMessage(msg);
     });
   }
 
@@ -274,6 +334,8 @@ function getSkipPermissionsFlag(): string {
 function runPhase(demandId: string, phase: string): void {
   const root = getProjectRoot();
   const skipFlag = getSkipPermissionsFlag();
+  // Track the running phase so terminalExit can emit context-aware next steps.
+  runningPhase.set(demandId, phase);
 
   if (phase === 'propose' || phase === 'design') {
     if (!ensureOpenflowDesignSkill()) return;
@@ -513,6 +575,16 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 .btn-gate{background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground);cursor:pointer;border:none;border-radius:4px;padding:4px 10px;font-size:11px;font-family:inherit;transition:opacity .15s}
 .btn-gate:hover{opacity:.85}
 .btn-gate:disabled{opacity:.4;cursor:not-allowed}
+/* End-of-phase next-steps banner */
+.next-steps{margin:12px 0 4px;padding:10px 12px;background:var(--vscode-textCodeBlock-background);border-radius:6px;border-left:3px solid var(--vscode-testing-iconPassed,#4ec9b0)}
+.next-steps.hidden{display:none}
+.ns-title{font-size:12px;font-weight:600;margin-bottom:8px;color:var(--vscode-editor-foreground)}
+.ns-list{display:flex;flex-direction:column;gap:6px}
+.btn-ns{display:flex;align-items:center;gap:10px;padding:7px 10px;border:none;border-radius:4px;background:var(--vscode-button-background,#0078d4);color:var(--vscode-button-foreground,#fff);cursor:pointer;font-family:inherit;font-size:12px;text-align:left;transition:opacity .15s}
+.btn-ns:hover{opacity:.85}
+.btn-ns .ns-label{font-weight:600;min-width:52px;text-align:left}
+.btn-ns .ns-desc{opacity:.9;flex:1}
+.btn-ns code{font-family:var(--vscode-editor-font-family,'Consolas',monospace);font-size:11px;background:rgba(0,0,0,.2);padding:2px 6px;border-radius:3px;white-space:pre}
 </style>
 </head>
 <body>
@@ -533,6 +605,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   <div id="dashboard-panel">
     <div id="mainContent"></div>
     <div id="emptyDetail" class="state-message">请从左侧 FlowMaster 侧边栏选择一个需求</div>
+    <div id="nextStepsBanner" class="next-steps hidden"></div>
   </div>
   <div id="divider"></div>
   <div id="terminal-panel">
@@ -566,6 +639,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   var divider = document.getElementById('divider');
   var dashboardPanel = document.getElementById('dashboard-panel');
   var terminalPanel = document.getElementById('terminal-panel');
+  var nextStepsBanner = document.getElementById('nextStepsBanner');
 
   var PHASE_ORDER = ['design','testcase','development','delivery','closure'];
   var PHASE_LABELS = {design:'设计',testcase:'测试',development:'开发',delivery:'交付',closure:'关闭'};
@@ -590,6 +664,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     if(msg.command === 'terminalExit'){ handleTerminalExit(msg); }
     if(msg.command === 'terminalError'){ handleTerminalError(msg); }
     if(msg.command === 'terminalStart'){ handleTerminalStart(msg); }
+    if(msg.command === 'phaseComplete'){ handlePhaseComplete(msg); }
   });
 
   // --- Terminal handlers ---
@@ -614,6 +689,47 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   function handleTerminalError(msg){
     appendToTerminal('\r\n[错误: ' + msg.error + ']');
     if(terminalStatus) terminalStatus.textContent = '错误';
+  }
+
+  // --- End-of-phase next-steps banner ---
+  function handlePhaseComplete(msg){
+    if(!nextStepsBanner) return;
+    // Only show banner for the currently displayed demand
+    if(currentDemand && msg.demandId && msg.demandId !== currentDemand.id){
+      nextStepsBanner.classList.add('hidden');
+      return;
+    }
+    var phaseLabel = msg.phaseLabel || msg.phase || '';
+    var steps = msg.nextSteps || [];
+    if(!steps.length){
+      nextStepsBanner.innerHTML = '<div class="ns-title">✓ ' + esc(phaseLabel) + ' 完成 — 需求生命周期结束</div>';
+      nextStepsBanner.classList.remove('hidden');
+      return;
+    }
+    var demandId = currentDemand ? currentDemand.id : '';
+    var html = '<div class="ns-title">✓ ' + esc(phaseLabel) + ' 阶段执行结束，下一步可执行：</div><div class="ns-list">';
+    html += steps.map(function(s){
+      return '<button class="btn-ns" data-phase="' + esc(s.phase) + '">' +
+        '<span class="ns-label">' + esc(s.label) + '</span>' +
+        '<span class="ns-desc">' + esc(s.desc) + '</span>' +
+        '<code>claude ' + esc(s.cmd) + ' ' + esc(demandId) + '</code>' +
+      '</button>';
+    }).join('');
+    html += '</div>';
+    nextStepsBanner.innerHTML = html;
+    nextStepsBanner.classList.remove('hidden');
+    nextStepsBanner.querySelectorAll('.btn-ns').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var p = this.getAttribute('data-phase');
+        if(!currentDemand || !p) return;
+        // Clear terminal and start the next phase command
+        if(terminalOutput) terminalOutput.textContent = '';
+        if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
+        appendToTerminal('[FlowMaster] 启动阶段: ' + esc(p) + ' (需求: ' + esc(currentDemand.id) + ')\n');
+        api.postMessage({command:'runPhase', demandId: currentDemand.id, phase: p});
+        nextStepsBanner.classList.add('hidden');
+      });
+    });
   }
 
   // --- Terminal init (plain text) ---
@@ -672,6 +788,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       currentDemand = null;
       displayedDemandId = null;
       mainContent.innerHTML = '';
+      if(nextStepsBanner) nextStepsBanner.classList.add('hidden');
       show(emptyDetail);
       emptyDetail.textContent = '暂无需求，请从左侧创建新需求';
       return;
@@ -691,6 +808,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     if(displayedDemandId !== d.id || !selectedPhase || selectedPhase === 'unknown' || !d.phases || !(selectedPhase in d.phases)){
       selectedPhase = d.phase || 'unknown';
       displayedDemandId = d.id;
+      if(nextStepsBanner) nextStepsBanner.classList.add('hidden');
     }
     var phases = d.phases || {};
     var isClosure = selectedPhase === 'closure';
@@ -781,6 +899,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
         currentDemandId = d.id;
         if(terminalStatus) terminalStatus.textContent = '启动中';
         if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
+        if(nextStepsBanner) nextStepsBanner.classList.add('hidden');
         // Clear terminal for new execution and show command
         if(terminalOutput) terminalOutput.textContent = '';
         appendToTerminal('[FlowMaster] 启动阶段: ' + esc(PHASE_LABELS[selectedPhase]||selectedPhase) + ' (需求: ' + esc(d.id) + ')\n');
