@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "flowmaster-webapp",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd webapp && npm run dev"],
+      "port": 5174,
+      "autoPort": true
+    }
+  ]
+}

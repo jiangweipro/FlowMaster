@@ -39,24 +39,21 @@ const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
-const child_process_1 = require("child_process");
 const sidebarProvider_1 = require("./sidebarProvider");
 const stateReader_1 = require("./stateReader");
-const processManager_1 = require("./processManager");
-const terminalBridge_1 = require("./terminalBridge");
+const EXT_VERSION = require('../package.json').version;
 // ============================================
 // Extension Entry Point
 // ============================================
 let panel;
-let panelReady = false;
 let projectRoot = '';
 let selectedDemandId = null;
 let stateReader;
 let sidebarProvider;
-let processManager;
-let terminalBridge;
 let contextGlobal;
 let pendingDemandSelection = null;
+// Track VS Code terminals created per demand for reuse
+const demandTerminals = new Map();
 function activate(context) {
     contextGlobal = context;
     try {
@@ -68,9 +65,6 @@ function activate(context) {
             : process.cwd();
         console.log('[FlowMaster] Project root:', projectRoot);
         stateReader = new stateReader_1.StateReader(projectRoot);
-        // Initialize ProcessManager and TerminalBridge
-        processManager = new processManager_1.ProcessManager();
-        terminalBridge = new terminalBridge_1.TerminalBridge(processManager);
         sidebarProvider = new sidebarProvider_1.FlowMasterSidebarProvider(stateReader, context);
         // Register sidebar view
         context.subscriptions.push(vscode.window.registerWebviewViewProvider(sidebarProvider_1.FlowMasterSidebarProvider.viewType, sidebarProvider));
@@ -81,12 +75,7 @@ function activate(context) {
             }
             if (panel) {
                 panel.reveal();
-                if (panelReady) {
-                    sendSelectedDemand();
-                }
-                else {
-                    pendingDemandSelection = selectedDemandId;
-                }
+                sendSelectedDemand();
                 return;
             }
             createPanel(context);
@@ -120,9 +109,14 @@ function activate(context) {
 function deactivate() {
     panel?.dispose();
     panel = undefined;
-    if (processManager) {
-        processManager.killAll();
-    }
+    // Dispose all tracked VS Code terminals
+    demandTerminals.forEach(term => {
+        try {
+            term.dispose();
+        }
+        catch { /* already disposed */ }
+    });
+    demandTerminals.clear();
 }
 // ============================================
 // Panel Management
@@ -162,6 +156,14 @@ const NEXT_STEPS = {
     ],
     design: [{ phase: 'testcase', desc: '生成测试用例与任务' }],
     testcase: [{ phase: 'development', desc: '编码实现' }],
+    delivery: [
+        { phase: 'fix', desc: '修复遗留问题' },
+        { phase: 'retest', desc: '回归重测' },
+    ],
+    closure: [
+        { phase: 'fix', desc: '修复遗留问题' },
+        { phase: 'retest', desc: '回归重测' },
+    ],
 };
 // Tracks which phase command is currently running per demand, so that on
 // terminalExit the extension can emit a phaseComplete message with next steps.
@@ -175,57 +177,37 @@ function buildNextSteps(phase) {
     }));
 }
 function createPanel(context) {
-    panelReady = false;
     panel = vscode.window.createWebviewPanel('flowmasterDashboard', 'FlowMaster 控制台', vscode.ViewColumn.One, {
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: [
             vscode.Uri.file(path.join(context.extensionPath, 'media')),
-            vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm')),
-            vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm-addon-fit')),
-            vscode.Uri.file(path.join(context.extensionPath, 'node_modules', 'xterm-addon-web-links')),
         ],
     });
     panel.webview.html = getHtml(panel.webview, context);
-    // Wire up terminal bridge message callback
-    if (terminalBridge) {
-        terminalBridge.setMessageCallback((msg) => {
-            if (!panel)
-                return;
-            // On process exit, emit a phaseComplete message carrying the phase that
-            // just ran and its context-aware next-step suggestions (build→fix/retest/close, etc.).
-            if (msg.command === 'terminalExit') {
-                const phase = runningPhase.get(msg.demandId);
-                if (phase) {
-                    panel.webview.postMessage({
-                        command: 'phaseComplete',
-                        demandId: msg.demandId,
-                        phase,
-                        phaseLabel: ACTION_LABELS[phase] || phase,
-                        code: msg.code,
-                        nextSteps: buildNextSteps(phase),
-                    });
-                    runningPhase.delete(msg.demandId);
+    panel.webview.onDidReceiveMessage((msg) => handleMessage(msg), undefined, context.subscriptions);
+    panel.onDidDispose(() => { panel = undefined; });
+    // Send state with retry: immediate + 100ms + 500ms
+    [0, 100, 500].forEach(function (delay) {
+        setTimeout(function () {
+            if (panel) {
+                try {
+                    sendSelectedDemand();
+                }
+                catch (e) {
+                    console.error('[FlowMaster] sendSelectedDemand error:', e);
                 }
             }
-            panel.webview.postMessage(msg);
-        });
-    }
-    panel.webview.onDidReceiveMessage((msg) => handleMessage(msg), undefined, context.subscriptions);
-    panel.onDidDispose(() => { panel = undefined; panelReady = false; });
-    sendSelectedDemand();
+        }, delay);
+    });
 }
 function handleMessage(msg) {
     if (!panel)
         return;
     switch (msg.command) {
         case 'ready': {
-            panelReady = true;
-            if (pendingDemandSelection) {
-                selectedDemandId = pendingDemandSelection;
-                pendingDemandSelection = null;
-            }
-            sendSelectedDemand();
+            // Legacy: webview sends ready when loaded. State is now sent immediately
+            // when the panel is created, but we keep this no-op for compatibility.
             break;
         }
         case 'refreshState':
@@ -240,46 +222,6 @@ function handleMessage(msg) {
         case 'reviewGate':
             reviewGate(msg.demandId || msg.payload?.demandId, msg.phase || msg.payload?.phase, msg.action || msg.payload?.action);
             break;
-        case 'terminalInput': {
-            const demandId = msg.payload?.demandId;
-            const data = msg.payload?.data;
-            if (demandId && data && terminalBridge) {
-                terminalBridge.write(demandId, data);
-            }
-            break;
-        }
-        case 'terminalResize': {
-            const demandId = msg.payload?.demandId;
-            const cols = msg.payload?.cols;
-            const rows = msg.payload?.rows;
-            if (demandId && terminalBridge) {
-                terminalBridge.resize(demandId, cols, rows);
-            }
-            break;
-        }
-        case 'switchTerminal': {
-            const demandId = msg.payload?.demandId;
-            if (demandId && terminalBridge) {
-                // Send buffered output for the switched demand
-                const buffer = terminalBridge.getBuffer(demandId);
-                if (buffer) {
-                    panel.webview.postMessage({
-                        command: 'terminalOutput',
-                        demandId,
-                        data: buffer,
-                    });
-                }
-                // If the process is still running, send start notification
-                if (processManager?.hasProcess(demandId)) {
-                    panel.webview.postMessage({
-                        command: 'terminalStart',
-                        demandId,
-                        phase: '',
-                    });
-                }
-            }
-            break;
-        }
     }
 }
 function refreshAll() {
@@ -301,48 +243,104 @@ function getProjectRoot() {
     return projectRoot || process.cwd();
 }
 function sendSelectedDemand() {
-    if (!panel || !panelReady)
+    if (!panel)
         return;
-    const all = stateReader?.readAllStates() || [];
-    if (all.length === 0) {
-        panel.webview.postMessage({ command: 'stateUpdated', payload: { demand: null, noDemands: true } });
-        return;
+    try {
+        const all = stateReader?.readAllStates() || [];
+        if (all.length === 0) {
+            panel.webview.postMessage({ command: 'stateUpdated', payload: { demand: null, noDemands: true } });
+            return;
+        }
+        // If a pending selection exists, prefer it
+        if (pendingDemandSelection && all.find(d => d.id === pendingDemandSelection)) {
+            selectedDemandId = pendingDemandSelection;
+            pendingDemandSelection = null;
+        }
+        // If no demand selected, pick the first one
+        if (!selectedDemandId || !all.find(d => d.id === selectedDemandId)) {
+            selectedDemandId = all[0].id;
+        }
+        const demand = all.find(d => d.id === selectedDemandId);
+        panel.webview.postMessage({ command: 'stateUpdated', payload: { demand: demand || all[0], noDemands: false } });
     }
-    // If a pending selection exists, prefer it
-    if (pendingDemandSelection && all.find(d => d.id === pendingDemandSelection)) {
-        selectedDemandId = pendingDemandSelection;
-        pendingDemandSelection = null;
+    catch (e) {
+        console.error('[FlowMaster] sendSelectedDemand error:', e);
+        panel.webview.postMessage({ command: 'stateUpdated', payload: { demand: null, noDemands: true, error: String(e) } });
     }
-    // If no demand selected, pick the first one
-    if (!selectedDemandId || !all.find(d => d.id === selectedDemandId)) {
-        selectedDemandId = all[0].id;
-    }
-    const demand = all.find(d => d.id === selectedDemandId);
-    panel.webview.postMessage({ command: 'stateUpdated', payload: { demand: demand || all[0], noDemands: false } });
 }
 // ============================================
-// Terminal Runner
+// Terminal Runner (VS Code Terminal)
 // ============================================
 function getSkipPermissionsFlag() {
-    // Always skip interactive permission prompts in the embedded terminal
+    // Always skip interactive permission prompts
     return ' --dangerously-skip-permissions';
+}
+/**
+ * Get or create a VS Code terminal for the given demand.
+ * Reuses existing terminal if available, otherwise creates a new one.
+ */
+function getDemandTerminal(demandId, cwd) {
+    let term = demandTerminals.get(demandId);
+    if (term) {
+        try {
+            // Check if terminal is still alive by accessing its properties
+            // (no direct isAlive check, but creationId access will throw if disposed)
+            term.creationId;
+            term.show();
+            return term;
+        }
+        catch {
+            // Terminal was disposed, remove from map and create new
+            demandTerminals.delete(demandId);
+        }
+    }
+    term = vscode.window.createTerminal({
+        name: `FlowMaster: ${demandId}`,
+        cwd: cwd,
+        message: 'FlowMaster 终端 - ' + demandId,
+    });
+    demandTerminals.set(demandId, term);
+    // Listen for terminal close to clean up
+    const disposable = vscode.window.onDidCloseTerminal((closedTerm) => {
+        if (closedTerm === term) {
+            demandTerminals.delete(demandId);
+            // Emit phaseComplete when terminal closes (best-effort)
+            const phase = runningPhase.get(demandId);
+            if (phase && panel) {
+                panel.webview.postMessage({
+                    command: 'phaseComplete',
+                    demandId,
+                    phase,
+                    phaseLabel: ACTION_LABELS[phase] || phase,
+                    code: null,
+                    nextSteps: buildNextSteps(phase),
+                });
+                runningPhase.delete(demandId);
+            }
+            disposable.dispose();
+        }
+    });
+    term.show();
+    return term;
 }
 function runPhase(demandId, phase) {
     const root = getProjectRoot();
     const skipFlag = getSkipPermissionsFlag();
-    // Track the running phase so terminalExit can emit context-aware next steps.
+    // Track the running phase so terminal close can emit context-aware next steps.
     runningPhase.set(demandId, phase);
     if (phase === 'propose' || phase === 'design') {
         if (!ensureOpenflowDesignSkill())
             return;
         ensurePanelOpen();
-        const args = skipFlag ? [skipFlag.trim(), '/openflow:design'] : ['/openflow:design'];
-        terminalBridge?.startProcess(demandId, 'claude', args, root);
+        const cmd = `claude ${skipFlag.trim()} /openflow:design`;
+        const term = getDemandTerminal(demandId, root);
+        term.sendText(cmd);
         return;
     }
     if (phase === 'closure') {
-        const args = skipFlag ? [skipFlag.trim(), '/openflow:close', demandId] : ['/openflow:close', demandId];
-        terminalBridge?.startProcess(demandId, 'claude', args, root);
+        const cmd = `claude ${skipFlag.trim()} /openflow:close ${demandId}`;
+        const term = getDemandTerminal(demandId, root);
+        term.sendText(cmd);
         return;
     }
     const command = PHASE_COMMAND_MAP[phase];
@@ -350,9 +348,9 @@ function runPhase(demandId, phase) {
         vscode.window.showErrorMessage(`[FlowMaster] 未知阶段: ${phase}`);
         return;
     }
-    // Use spawn-based process for all other phases
-    const args = skipFlag ? [skipFlag.trim(), command, demandId] : [command, demandId];
-    terminalBridge?.startProcess(demandId, 'claude', args, root);
+    const cmd = `claude ${skipFlag.trim()} ${command} ${demandId}`;
+    const term = getDemandTerminal(demandId, root);
+    term.sendText(cmd);
 }
 function runOpenflowDesign() {
     if (!ensureOpenflowDesignSkill())
@@ -360,8 +358,11 @@ function runOpenflowDesign() {
     const root = getProjectRoot();
     const skipFlag = getSkipPermissionsFlag();
     ensurePanelOpen();
-    const args = skipFlag ? [skipFlag.trim(), '/openflow:design'] : ['/openflow:design'];
-    terminalBridge?.startProcess('flowmaster:new', 'claude', args, root);
+    const demandId = 'flowmaster:new';
+    runningPhase.set(demandId, 'design');
+    const cmd = `claude ${skipFlag.trim()} /openflow:design`;
+    const term = getDemandTerminal(demandId, root);
+    term.sendText(cmd);
 }
 function hasOpenflowDesignSkill() {
     const root = getProjectRoot();
@@ -388,10 +389,7 @@ function openFile(filePath) {
         vscode.window.showErrorMessage(`[FlowMaster] 文件不存在: ${absPath}`);
         return;
     }
-    const proc = (0, child_process_1.spawn)('code', ['-r', absPath], { shell: false, windowsHide: true });
-    proc.on('error', () => {
-        vscode.workspace.openTextDocument(absPath).then(doc => vscode.window.showTextDocument(doc, { preview: false }), err => vscode.window.showErrorMessage(`[FlowMaster] 打开失败: ${String(err)}`));
-    });
+    vscode.workspace.openTextDocument(absPath).then(doc => vscode.window.showTextDocument(doc, { preview: false }), err => vscode.window.showErrorMessage(`[FlowMaster] 打开失败: ${String(err)}`));
 }
 // ============================================
 // Gate Review - Direct state file update
@@ -460,12 +458,9 @@ function reviewGate(demandId, phase, action) {
 }
 // ============================================
 // WebView HTML (inlined CSS + JS, Chinese UI)
-// Main dashboard: workflow-only view + inline terminal
+// Main dashboard: workflow view only (terminal uses VS Code native terminal)
 // ============================================
-function getHtml(webview, context) {
-    // Read configuration for panel split ratio
-    const cfg = vscode.workspace.getConfiguration('flowmaster');
-    const splitRatio = cfg.get('terminal.splitRatio', 0.6);
+function getHtml(webview, _context) {
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -474,10 +469,8 @@ function getHtml(webview, context) {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource}; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'unsafe-inline' ${webview.cspSource};">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;overflow:hidden}
-body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px);color:var(--vscode-editor-foreground);background:var(--vscode-editor-background)}
-#app{display:flex;flex-direction:column;height:100vh}
-#header{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
+body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px);color:var(--vscode-editor-foreground);background:var(--vscode-editor-background);padding:16px;line-height:1.5}
+#header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--vscode-panel-border)}
 #header h1{font-size:15px;font-weight:600}
 .btn{cursor:pointer;border:none;border-radius:4px;padding:5px 12px;font-size:12px;font-family:inherit;transition:opacity .15s}
 .btn-run{background:var(--vscode-button-background,#0078d4);color:var(--vscode-button-foreground,#fff)}
@@ -489,30 +482,14 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 .btn-icon svg{display:block}
 .state-message{text-align:center;padding:32px;color:var(--vscode-descriptionForeground)}
 .state-message.hidden{display:none}
-.state-error{color:var(--vscode-errorForeground);background:var(--vscode-inputValidation-errorBackground);border:1px solid var(--vscode-inputValidation-errorBorder);border-radius:4px;padding:8px 12px;margin:8px 16px}
-/* Dashboard panel (upper) */
-#dashboard-panel{flex:${Math.round(splitRatio * 100)} 1 0;min-height:100px;overflow-y:auto;padding:16px}
-/* Splitter */
-#divider{height:4px;background:var(--vscode-panel-border,#333);cursor:row-resize;flex-shrink:0;transition:background .15s;z-index:10}
-#divider:hover,#divider.active{background:var(--vscode-focusBorder,#007acc)}
-/* Terminal panel (lower) */
-#terminal-panel{flex:${Math.round((1 - splitRatio) * 100)} 1 0;min-height:80px;overflow:hidden;background:var(--vscode-terminal-background,#1e1e1e);position:relative;display:flex;flex-direction:column;border-top:1px solid var(--vscode-panel-border)}
-#terminal-header{flex-shrink:0;height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:var(--vscode-titleBar-activeBackground,#2d2d30);border-bottom:1px solid var(--vscode-panel-border);font-size:11px;color:var(--vscode-titleBar-activeForeground,#cccccc)}
-#terminal-header .th-title{display:flex;align-items:center;gap:6px;font-weight:600}
-#terminal-header .th-status{font-size:10px;opacity:.7}
-#terminal-container{flex:1;min-height:0;width:100%;padding:8px 12px;overflow-y:auto;background:var(--vscode-terminal-background,#1e1e1e);color:var(--vscode-terminal-foreground,#ccc)}
-#terminal-output{margin:0;font-family:var(--vscode-editor-font-family,'Consolas','Courier New',monospace);font-size:var(--vscode-editor-font-size,13px);line-height:1.5;white-space:pre-wrap;word-break:break-all}
-#terminal-placeholder{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground,#858585);font-size:13px;font-family:var(--vscode-font-family);flex-direction:column;gap:8px}
-#terminal-placeholder.hidden{display:none}
-#terminal-placeholder svg{opacity:.5}
-.no-select{user-select:none;-webkit-user-select:none}
+.state-error{color:var(--vscode-errorForeground);background:var(--vscode-inputValidation-errorBackground);border:1px solid var(--vscode-inputValidation-errorBorder);border-radius:4px;padding:8px 12px;margin:0 0 12px}
 /* Demand header */
 .demand-header{margin-bottom:16px}
 .demand-header .dh-name{font-size:16px;font-weight:600}
 .demand-header .dh-id{font-size:11px;color:var(--vscode-descriptionForeground);font-family:monospace;margin-top:2px}
 /* Phase grid */
-.phase-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:16px}
-.phase-box{border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px 4px;text-align:center;font-size:11px;transition:all .2s;cursor:pointer;position:relative}
+.phase-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:16px}
+.phase-box{border:1px solid var(--vscode-widget-border);border-radius:6px;padding:6px 2px;text-align:center;font-size:10px;transition:all .2s;cursor:pointer;position:relative;min-width:0}
 .phase-box:hover{border-color:var(--vscode-focusBorder)}
 .phase-box.passed{background:rgba(78,201,176,0.12);border-color:var(--vscode-testing-iconPassed,#4ec9b0)}
 .phase-box.active{background:rgba(0,124,212,0.12);border-color:var(--vscode-focusBorder,#007fd4)}
@@ -565,11 +542,11 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 </style>
 </head>
 <body>
-<div id="app">
   <header id="header">
     <div style="display:flex;align-items:center;gap:8px">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="18" r="3"></circle><path d="M9 6h6"></path><path d="M6 9v6"></path><path d="M18 9v6"></path><path d="M9 18h6"></path></svg>
       <h1>FlowMaster 控制台</h1>
+      <span id="versionBadge" style="font-size:11px;color:var(--vscode-descriptionForeground);opacity:.7;margin-left:4px">v${EXT_VERSION}</span>
     </div>
     <div style="display:flex;align-items:center;gap:8px">
       <button id="refreshBtn" class="btn-icon" title="刷新">
@@ -579,99 +556,49 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   </header>
   <div id="loadingState" class="state-message">加载中...</div>
   <div id="errorState" class="state-message state-error hidden"></div>
-  <div id="dashboard-panel">
-    <div id="mainContent"></div>
-    <div id="emptyDetail" class="state-message">请从左侧 FlowMaster 侧边栏选择一个需求</div>
-    <div id="nextStepsBanner" class="next-steps hidden"></div>
-  </div>
-  <div id="divider"></div>
-  <div id="terminal-panel">
-    <div id="terminal-header">
-      <div class="th-title">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-        <span>FlowMaster 终端</span>
-      </div>
-      <div class="th-status" id="terminalStatus">就绪</div>
-    </div>
-    <div id="terminal-container"><pre id="terminal-output"></pre></div>
-    <div id="terminal-placeholder">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-      <span>终端准备就绪，点击下方“执行”按钮启动</span>
-    </div>
-  </div>
-</div>
+  <div id="mainContent"></div>
+  <div id="emptyDetail" class="state-message">请从左侧 FlowMaster 侧边栏选择一个需求</div>
+  <div id="nextStepsBanner" class="next-steps hidden"></div>
 <script>
 (function(){
   'use strict';
   var api = acquireVsCodeApi();
+
+  // Debug: catch any JS errors and show them on the page
+  window.onerror = function(msg, url, line, col, err){
+    var el = document.getElementById('errorState');
+    if(el){ el.textContent = 'JS Error: ' + msg + ' (line ' + line + ')'; el.classList.remove('hidden'); }
+    console.error('[FM-webview] error:', msg, url, line, col, err);
+    return false;
+  };
+
   var mainContent = document.getElementById('mainContent');
   var emptyDetail = document.getElementById('emptyDetail');
   var loadingState = document.getElementById('loadingState');
   var errorState = document.getElementById('errorState');
   var refreshBtn = document.getElementById('refreshBtn');
-  var terminalStatus = document.getElementById('terminalStatus');
-  var terminalContainer = document.getElementById('terminal-container');
-  var terminalOutput = document.getElementById('terminal-output');
-  var terminalPlaceholder = document.getElementById('terminal-placeholder');
-  var divider = document.getElementById('divider');
-  var dashboardPanel = document.getElementById('dashboard-panel');
-  var terminalPanel = document.getElementById('terminal-panel');
   var nextStepsBanner = document.getElementById('nextStepsBanner');
 
-  var PHASE_ORDER = ['design','testcase','development','delivery','closure'];
-  var PHASE_LABELS = {design:'设计',testcase:'测试',development:'开发',delivery:'交付',closure:'关闭'};
+  var PHASE_ORDER = ['design','testcase','development','fix','retest','delivery','closure'];
+  var PHASE_LABELS = {design:'设计',testcase:'用例',development:'开发',fix:'修复',retest:'重测',delivery:'交付',closure:'关闭'};
   var PHASE_STATUS = {done:'完成',active:'进行中',blocked:'阻塞',pending:'待开始',in_progress:'进行中'};
-  var PHASE_COMMANDS = {design:'/openflow:design',testcase:'/openflow:plan',development:'/openflow:build',delivery:'/openflow:close',closure:''};
-  var PHASE_DESCRIPTIONS = {design:'创建需求设计文档，明确实现方案',testcase:'生成测试计划与测试用例',development:'根据设计进行编码实现',delivery:'交付变更并关闭需求',closure:'需求已完成，无需执行操作'};
+  var PHASE_COMMANDS = {design:'/openflow:design',testcase:'/openflow:plan',development:'/openflow:build',delivery:'/openflow:close',closure:'',fix:'/openflow:fix',retest:'/openflow:retest'};
+  var PHASE_DESCRIPTIONS = {design:'需求探索与澄清 → 生成提案(proposal) → 编写设计文档(design) → 自检并产出设计报告',testcase:'基于设计文档生成测试方案(testing-guide) → 拆分任务清单(tasks) → 自检并产出用例报告',development:'环境请求与确认 → 编码实现 → 编写AT(Acceptance Tests) → 编译部署 → 执行AT → 一次统一修复 → 产出测试报告',fix:'汇总失败用例 → 统一修复代码 → 重编译替换 → 重跑失败用例验证 → 仍失败则标记失败回滚(最多循环5次)',retest:'列出全部用例 → 选部分/全部重跑(不重编译，用当前已部署代码) → 更新test_results → 产出retest-report',delivery:'更新文档 → 归档需求(changes/specs) → 产出交付报告 → 完结需求生命周期',closure:'需求已完成归档，无需执行操作。如需查看历史报告或重新打开需求，请使用其他命令。'};
 
   var currentDemand = null;
   var selectedPhase = null;
   var displayedDemandId = null;
-  var currentDemandId = null;
-  var isDragging = false;
-  var dragStartY = 0;
-  var dragStartFlex = 0.6;
-  var minDashboardHeight = 100;
-  var minTerminalHeight = 80;
 
   window.addEventListener('message',function(e){
     var msg = e.data;
+    console.log('[FM-webview] received command:', msg.command);
     if(msg.command === 'stateUpdated'){ handleState(msg.payload); }
-    if(msg.command === 'terminalOutput'){ handleTerminalOutput(msg); }
-    if(msg.command === 'terminalExit'){ handleTerminalExit(msg); }
-    if(msg.command === 'terminalError'){ handleTerminalError(msg); }
-    if(msg.command === 'terminalStart'){ handleTerminalStart(msg); }
     if(msg.command === 'phaseComplete'){ handlePhaseComplete(msg); }
   });
-
-  // --- Terminal handlers ---
-  function appendToTerminal(text){
-    if(!terminalOutput || !terminalContainer) return;
-    terminalOutput.textContent += text;
-    terminalContainer.scrollTop = terminalContainer.scrollHeight;
-  }
-  function handleTerminalOutput(msg){
-    appendToTerminal(msg.data);
-  }
-  function handleTerminalStart(msg){
-    if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
-    if(msg.demandId) currentDemandId = msg.demandId;
-    if(terminalStatus) terminalStatus.textContent = '运行中';
-  }
-  function handleTerminalExit(msg){
-    appendToTerminal('\r\n[进程已退出，退出码: ' + msg.code + ']');
-    if(msg.demandId){ currentDemandId = null; }
-    if(terminalStatus) terminalStatus.textContent = '已退出';
-  }
-  function handleTerminalError(msg){
-    appendToTerminal('\r\n[错误: ' + msg.error + ']');
-    if(terminalStatus) terminalStatus.textContent = '错误';
-  }
 
   // --- End-of-phase next-steps banner ---
   function handlePhaseComplete(msg){
     if(!nextStepsBanner) return;
-    // Only show banner for the currently displayed demand
     if(currentDemand && msg.demandId && msg.demandId !== currentDemand.id){
       nextStepsBanner.classList.add('hidden');
       return;
@@ -699,61 +626,10 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
       btn.addEventListener('click', function(){
         var p = this.getAttribute('data-phase');
         if(!currentDemand || !p) return;
-        // Clear terminal and start the next phase command
-        if(terminalOutput) terminalOutput.textContent = '';
-        if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
-        appendToTerminal('[FlowMaster] 启动阶段: ' + esc(p) + ' (需求: ' + esc(currentDemand.id) + ')\n');
         api.postMessage({command:'runPhase', demandId: currentDemand.id, phase: p});
         nextStepsBanner.classList.add('hidden');
       });
     });
-  }
-
-  // --- Terminal init (plain text) ---
-  function initTerminal(){
-    if(terminalPlaceholder){
-      terminalPlaceholder.classList.remove('hidden');
-    }
-  }
-
-  function fitTerminal(){
-    // No-op for plain text terminal; scroll area resizes automatically
-  }
-
-  // --- Splitter drag ---
-  function initSplitter(){
-    if(!divider || !dashboardPanel || !terminalPanel) return;
-    divider.addEventListener('mousedown',function(e){
-      isDragging = true;
-      dragStartY = e.clientY;
-      var currentFlex = dashboardPanel.style.flex;
-      dragStartFlex = currentFlex ? parseFloat(currentFlex)/100 : 0.6;
-      divider.classList.add('active');
-      document.body.classList.add('no-select');
-      document.addEventListener('mousemove',onDragMove);
-      document.addEventListener('mouseup',onDragUp);
-    });
-  }
-  function onDragMove(e){
-    if(!isDragging) return;
-    var containerHeight = document.getElementById('app').clientHeight;
-    if(containerHeight <= 0) return;
-    var deltaRatio = (e.clientY - dragStartY) / containerHeight;
-    var newRatio = dragStartFlex + deltaRatio;
-    var maxR = 1 - minTerminalHeight/containerHeight;
-    var minR = minDashboardHeight/containerHeight;
-    newRatio = Math.max(minR, Math.min(maxR, newRatio));
-    dashboardPanel.style.flex = (newRatio * 100) + ' 1 0';
-    terminalPanel.style.flex = ((1-newRatio) * 100) + ' 1 0';
-    fitTerminal();
-  }
-  function onDragUp(){
-    isDragging = false;
-    divider.classList.remove('active');
-    document.body.classList.remove('no-select');
-    document.removeEventListener('mousemove',onDragMove);
-    document.removeEventListener('mouseup',onDragUp);
-    fitTerminal();
   }
 
   // --- State handling ---
@@ -782,7 +658,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
 
   function showDemandDetail(d){
     // Keep user's selected phase while viewing the same demand; reset only when demand changes
-    if(displayedDemandId !== d.id || !selectedPhase || selectedPhase === 'unknown' || !d.phases || !(selectedPhase in d.phases)){
+    if(displayedDemandId !== d.id || !selectedPhase || selectedPhase === 'unknown'){
       selectedPhase = d.phase || 'unknown';
       displayedDemandId = d.id;
       if(nextStepsBanner) nextStepsBanner.classList.add('hidden');
@@ -873,15 +749,10 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
     if(execBtn){
       execBtn.addEventListener('click',function(){
         this.disabled = true; this.textContent = '执行中...';
-        currentDemandId = d.id;
-        if(terminalStatus) terminalStatus.textContent = '启动中';
-        if(terminalPlaceholder) terminalPlaceholder.classList.add('hidden');
         if(nextStepsBanner) nextStepsBanner.classList.add('hidden');
-        // Clear terminal for new execution and show command
-        if(terminalOutput) terminalOutput.textContent = '';
-        appendToTerminal('[FlowMaster] 启动阶段: ' + esc(PHASE_LABELS[selectedPhase]||selectedPhase) + ' (需求: ' + esc(d.id) + ')\n');
         api.postMessage({command:'runPhase',demandId:d.id,phase:selectedPhase});
-        setTimeout(function(){ if(execBtn){ execBtn.disabled=false; execBtn.textContent='▶ 执行 '+esc(PHASE_LABELS[selectedPhase]||selectedPhase); }},5000);
+        var sp = selectedPhase || '';
+        setTimeout(function(){ if(execBtn){ execBtn.disabled=false; execBtn.textContent='▶ 执行 '+esc(PHASE_LABELS[sp]||sp); }},5000);
       });
     }
 
@@ -918,13 +789,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px
   function esc(s){ if(!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
   if(refreshBtn){ refreshBtn.addEventListener('click',function(){ hide(errorState); api.postMessage({command:'refreshState'}); }); }
-
-  // Initialize
-  initSplitter();
-  initTerminal();
-  // Notify extension that the panel webview is ready to receive messages.
-  api.postMessage({command:'ready'});
-  setTimeout(function(){ if(loadingState&&!loadingState.classList.contains('hidden')){ showError('无法连接扩展进程'); }},8000);
 })();
 </script>
 </body>
