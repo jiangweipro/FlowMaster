@@ -1,8 +1,8 @@
 {
   "name": "flowmaster-dashboard",
   "displayName": "FlowMaster Dashboard",
-  "description": "VSCode Extension WebView UI for OpenFlow workflow management",
-  "version": "0.3.9",
+  "description": "Visual workflow dashboard for OpenFlow demand lifecycle management in VS Code",
+  "version": "1.0.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,9 +13,23 @@
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "workflow",
+    "openflow",
+    "project-management",
+    "demand",
+    "claude",
+    "ai",
+    "lifecycle"
   ],
   "icon": "media/icon-128.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
   "activationEvents": [
     "onCommand:flowmaster.openDashboard",
     "onView:flowmaster-sidebar"
