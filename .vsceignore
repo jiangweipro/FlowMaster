@@ -1,0 +1,17 @@
+.vscode/**
+.vscode-test/**
+.workbuddy/**
+.uploads/**
+.workflow/**
+.claude/**
+openspec/**
+scripts/**
+tests/**
+webapp/**
+.gitignore
+.gitattributes
+CLAUDE.md
+**/*.map
+**/*.ts
+tsconfig.json
+vitest.config.ts

@@ -2,7 +2,7 @@
   "name": "flowmaster-dashboard",
   "displayName": "FlowMaster Dashboard",
   "description": "Visual workflow dashboard for OpenFlow demand lifecycle management in VS Code",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "license": "MIT",
   "repository": {
     "type": "git",

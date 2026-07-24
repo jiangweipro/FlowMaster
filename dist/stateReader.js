@@ -38,28 +38,45 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const yaml_1 = require("yaml");
+// ============================================================
+// State Reader — parses .workflow/state/*.yaml with caching
+// ============================================================
 class StateReader {
     constructor(workspaceRoot) {
+        this.cache = null;
         if (workspaceRoot) {
             this.workspaceRoot = workspaceRoot;
         }
         else {
             const folders = vscode.workspace.workspaceFolders;
-            this.workspaceRoot = folders && folders.length > 0
-                ? folders[0].uri.fsPath
-                : process.cwd();
+            this.workspaceRoot =
+                folders && folders.length > 0
+                    ? folders[0].uri.fsPath
+                    : process.cwd();
         }
+        const configPath = vscode.workspace
+            .getConfiguration('flowmaster')
+            .get('statePath', '.workflow/state');
+        this.statePath = path.join(this.workspaceRoot, configPath);
     }
+    /**
+     * Read all demand states from the state directory.
+     * Results are cached; call invalidateCache() to force re-read.
+     */
     readAllStates() {
-        const statePath = this.getStatePath();
-        if (!fs.existsSync(statePath)) {
-            return [];
+        if (this.cache)
+            return this.cache;
+        if (!fs.existsSync(this.statePath)) {
+            this.cache = [];
+            return this.cache;
         }
-        const files = fs.readdirSync(statePath).filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
+        const files = fs
+            .readdirSync(this.statePath)
+            .filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
         const results = [];
         for (const file of files) {
             try {
-                const fullPath = path.join(statePath, file);
+                const fullPath = path.join(this.statePath, file);
                 const content = fs.readFileSync(fullPath, 'utf-8');
                 if (!content.trim()) {
                     console.warn(`[FlowMaster] Empty state file: ${file}`);
@@ -70,51 +87,58 @@ class StateReader {
                     console.warn(`[FlowMaster] Invalid state file (missing "change" field): ${file}`);
                     continue;
                 }
-                const summary = {
-                    id: parsed.change,
-                    name: parsed.change,
-                    title: parsed.title || parsed.change,
-                    phase: parsed.current_phase || 'unknown',
-                    gate: this.getCurrentGateStatus(parsed),
-                    status: parsed.status || 'unknown',
-                    artifacts: this.getCurrentArtifacts(parsed),
-                    phases: parsed.phases || {}
-                };
-                results.push(summary);
+                results.push(this.toSummary(parsed));
             }
             catch (err) {
                 console.warn(`[FlowMaster] Failed to parse state file: ${file} — ${String(err)}`);
             }
         }
+        this.cache = results;
         return results;
     }
+    /**
+     * Read a single demand state by ID. Uses cache when available (O(1)).
+     */
     readState(demandId) {
+        // Ensure cache is populated
         const all = this.readAllStates();
-        return all.find(d => d.id === demandId) || null;
+        return all.find((d) => d.id === demandId) || null;
     }
+    /**
+     * Invalidate the internal cache so the next readAllStates() re-reads from disk.
+     */
+    invalidateCache() {
+        this.cache = null;
+    }
+    /** Get the resolved state directory path. */
     getStatePath() {
-        const configPath = vscode.workspace.getConfiguration('flowmaster').get('statePath', '.workflow/state');
-        return path.join(this.workspaceRoot, configPath);
+        return this.statePath;
+    }
+    // ----------------------------------------------------------
+    // Private helpers
+    // ----------------------------------------------------------
+    toSummary(parsed) {
+        return {
+            id: parsed.change,
+            name: parsed.change,
+            title: parsed.title || parsed.change,
+            phase: parsed.current_phase || 'unknown',
+            gate: this.getCurrentGateStatus(parsed),
+            status: parsed.status || 'unknown',
+            artifacts: this.getCurrentArtifacts(parsed),
+            phases: parsed.phases || {},
+        };
     }
     getCurrentGateStatus(demand) {
-        if (!demand.phases || !demand.current_phase) {
+        if (!demand.phases || !demand.current_phase)
             return 'unknown';
-        }
         const currentPhase = demand.phases[demand.current_phase];
-        if (!currentPhase || !currentPhase.gate) {
-            return 'unknown';
-        }
-        return currentPhase.gate.status || 'unknown';
+        return currentPhase?.gate?.status || 'unknown';
     }
     getCurrentArtifacts(demand) {
-        if (!demand.phases || !demand.current_phase) {
+        if (!demand.phases || !demand.current_phase)
             return [];
-        }
-        const currentPhase = demand.phases[demand.current_phase];
-        if (!currentPhase || !currentPhase.artifacts) {
-            return [];
-        }
-        return currentPhase.artifacts;
+        return demand.phases[demand.current_phase]?.artifacts || [];
     }
 }
 exports.StateReader = StateReader;
